@@ -83,6 +83,24 @@ struct FieldAppCommand {
         try? await Task.sleep(nanoseconds: 500_000_000)
       }
     }
+    let batteryTask = Task {
+      var batteryGuard = BatteryGuard(threshold: 0.10)
+      while !Task.isCancelled {
+        if let battery = try? await session.batteryState(),
+          batteryGuard.shouldPause(for: battery),
+          await worker.snapshot().desiredState == .running
+        {
+          await worker.setDesiredState(.paused)
+          announce("\(deviceLabel)の電池が残り\(Int(battery.level * 100))%になったので、撮影を止めました。")
+        }
+        try? await Task.sleep(nanoseconds: 60_000_000_000)
+      }
+    }
+    let controlServer = try startControlServer(environment: environment, worker: worker)
+    defer {
+      batteryTask.cancel()
+      controlServer?.stop()
+    }
 
     // Typed commands and termination signals share one queue, so Ctrl-C or
     // a closed terminal leaves the device paused the same way `quit` does.
@@ -103,7 +121,7 @@ struct FieldAppCommand {
     }
     defer { signalSources.forEach { $0.cancel() } }
 
-    print("Worker is paused. Commands: start, pause, status, retry, quit")
+    print("Observing without tapping until the first command. Commands: start, pause, status, retry, quit")
     for await command in commands {
       switch command {
       case "start":
@@ -164,6 +182,65 @@ struct FieldAppCommand {
     return try JSONDecoder().decode(OperationDefinition.self, from: data)
   }
 
+  /// The wearer's back tap reaches the Mac through this server, when
+  /// FAO_CONTROL_PORT and FAO_CONTROL_TOKEN are set.
+  private static func startControlServer(
+    environment: [String: String],
+    worker: DeviceWorker
+  ) throws -> ControlServer? {
+    guard let rawPort = environment["FAO_CONTROL_PORT"] else { return nil }
+    guard let port = UInt16(rawPort) else {
+      throw FieldAppCLIError.invalidEnvironment("FAO_CONTROL_PORT must be a port number.")
+    }
+    let token = try requiredEnvironment("FAO_CONTROL_TOKEN", from: environment)
+    guard token.count >= 16 else {
+      throw FieldAppCLIError.invalidEnvironment("FAO_CONTROL_TOKEN must be at least 16 characters.")
+    }
+    let server = try ControlServer(port: port, token: token) { request in
+      await answer(request, worker: worker)
+    }
+    server.start()
+    print("Listening for start, pause, and toggle on port \(port).")
+    return server
+  }
+
+  private static func answer(_ request: ControlRequest, worker: DeviceWorker) async -> String {
+    let requested: DesiredCaptureState
+    switch request {
+    case .start:
+      requested = .running
+    case .pause:
+      requested = .paused
+    case .toggle:
+      requested = await worker.snapshot().desiredState == .running ? .paused : .running
+    }
+    await worker.setDesiredState(requested)
+    print("\(timestamp()) requested \(requested.rawValue) (\(request.rawValue) from the control port)")
+
+    let snapshot = await worker.snapshot()
+    let sentence = snapshot.desiredState == .running ? "撮影を始めます。" : "撮影を止めます。"
+    switch snapshot.phase {
+    case .needsAttention:
+      return sentence + "ただ、画面の確認が必要です。"
+    case .reconnecting:
+      return sentence + "今はiPhoneにつながっていないので、つながったら反映します。"
+    default:
+      return sentence
+    }
+  }
+
+  /// Prints the message and shows it as a notification on the Mac.
+  private static func announce(_ message: String) {
+    print("\(timestamp()) \(message)")
+    let notifier = Process()
+    notifier.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+    notifier.arguments = [
+      "-e", "on run argv", "-e", "display notification (item 1 of argv) with title \"field-app\"",
+      "-e", "end run", message,
+    ]
+    try? notifier.run()
+  }
+
   private static func requiredEnvironment(
     _ name: String,
     from environment: [String: String]
@@ -212,7 +289,7 @@ struct FieldAppCommand {
   }
 
   private static func snapshotDescription(_ snapshot: DeviceWorkerSnapshot) -> String {
-    "desired=\(snapshot.desiredState.rawValue) phase=\(phaseDescription(snapshot.phase)) "
+    "desired=\(snapshot.desiredState?.rawValue ?? "none") phase=\(phaseDescription(snapshot.phase)) "
       + "screen=\(snapshot.observation.map(observationDescription) ?? "none") revision=\(snapshot.revision)"
   }
 
@@ -237,6 +314,8 @@ struct FieldAppCommand {
       return "waiting for the app"
     case .transitioning(let action):
       return "tapping \(action.identifier)"
+    case .reconnecting(let detail):
+      return "reconnecting: \(detail)"
     case .needsAttention(let detail):
       return "needs attention: \(detail)"
     case .stopped:

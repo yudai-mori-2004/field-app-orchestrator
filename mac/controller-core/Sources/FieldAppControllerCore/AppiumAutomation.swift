@@ -146,6 +146,9 @@ public protocol AppAutomationSession: Sendable {
   /// back to its top.
   func scrollToTop() async throws
   func frontmostBundleIdentifier() async throws -> String?
+  func isLocked() async throws -> Bool
+  /// Unlocks a device without a passcode.
+  func unlock() async throws
   func activateApp() async throws
   func systemAlertText() async throws -> String?
   func close() async
@@ -167,6 +170,17 @@ public enum AppiumAutomationError: Error, LocalizedError, Sendable, Equatable {
       return "Appium command failed: \(detail)"
     case .noSuchAlert:
       return "No system alert is open."
+    }
+  }
+}
+
+extension AppiumAutomationError: CaptureLinkError {
+  public var isLinkFailure: Bool {
+    switch self {
+    case .commandFailed, .malformedResponse:
+      return true
+    case .invalidConfiguration, .noSuchAlert:
+      return false
     }
   }
 }
@@ -213,9 +227,11 @@ public struct AppiumDeviceConfiguration: Sendable, Equatable {
 
 public actor AppiumSession: AppAutomationSession {
   private static let webDriverElementKey = "element-6066-11e4-a52e-4f735466cecf"
+  private static let reconnectInterval = Duration.seconds(10)
 
   private let configuration: AppiumDeviceConfiguration
   private var sessionIdentifier: String?
+  private var lastConnectionAttempt: ContinuousClock.Instant?
 
   private init(configuration: AppiumDeviceConfiguration) {
     self.configuration = configuration
@@ -225,30 +241,17 @@ public actor AppiumSession: AppAutomationSession {
     configuration: AppiumDeviceConfiguration
   ) async throws -> AppiumSession {
     let session = AppiumSession(configuration: configuration)
-    try await session.create()
+    _ = try await session.connectedSessionIdentifier()
     return session
   }
 
   public func elements(
     matching selectors: [ElementSelector]
   ) async throws -> [AutomationElement] {
-    do {
-      return try await elementsOnce(matching: selectors)
-    } catch AppiumAutomationError.commandFailed {
-      await invalidateCurrentSession()
-      try await create()
-      return try await elementsOnce(matching: selectors)
-    }
-  }
-
-  private func elementsOnce(
-    matching selectors: [ElementSelector]
-  ) async throws -> [AutomationElement] {
     guard !selectors.isEmpty else { return [] }
-    let sessionIdentifier = try activeSessionIdentifier()
-    let value = try await request(
-      method: "POST",
-      pathComponents: ["session", sessionIdentifier, "elements"],
+    let value = try await command(
+      "POST",
+      ["elements"],
       body: [
         "using": "-ios predicate string",
         "value": selectors.map(\.predicate).joined(separator: " OR "),
@@ -272,12 +275,7 @@ public actor AppiumSession: AppAutomationSession {
   }
 
   public func rect(of element: AutomationElement) async throws -> AutomationRect {
-    let sessionIdentifier = try activeSessionIdentifier()
-    let value = try await request(
-      method: "GET",
-      pathComponents: ["session", sessionIdentifier, "element", element.identifier, "rect"],
-      body: nil
-    )
+    let value = try await command("GET", ["element", element.identifier, "rect"])
     guard
       let rect = value as? [String: Any],
       let x = (rect["x"] as? NSNumber)?.doubleValue,
@@ -291,35 +289,12 @@ public actor AppiumSession: AppAutomationSession {
   }
 
   public func isHittable(_ element: AutomationElement) async throws -> Bool {
-    let sessionIdentifier = try activeSessionIdentifier()
-    let value = try await request(
-      method: "GET",
-      pathComponents: [
-        "session", sessionIdentifier, "element", element.identifier, "attribute", "hittable",
-      ],
-      body: nil
-    )
+    let value = try await command("GET", ["element", element.identifier, "attribute", "hittable"])
     return (value as? String) == "true" || (value as? Bool) == true
   }
 
   public func tap(_ element: AutomationElement) async throws {
-    let sessionIdentifier = try activeSessionIdentifier()
-    do {
-      _ = try await request(
-        method: "POST",
-        pathComponents: [
-          "session",
-          sessionIdentifier,
-          "element",
-          element.identifier,
-          "click",
-        ],
-        body: [:]
-      )
-    } catch {
-      await invalidateCurrentSession()
-      throw error
-    }
+    _ = try await command("POST", ["element", element.identifier, "click"], body: [:])
   }
 
   public func drag(from start: AutomationPoint, to end: AutomationPoint) async throws {
@@ -344,6 +319,25 @@ public actor AppiumSession: AppAutomationSession {
     return (value as? [String: Any])?["bundleId"] as? String
   }
 
+  public func batteryState() async throws -> BatteryState {
+    let value = try await execute("mobile: batteryInfo", arguments: [:]) as? [String: Any]
+    guard let level = (value?["level"] as? NSNumber)?.doubleValue else {
+      throw AppiumAutomationError.malformedResponse("battery level is missing")
+    }
+    // 2 is charging and 3 is full, in UIDevice.BatteryState numbering.
+    let state = (value?["state"] as? NSNumber)?.intValue ?? 0
+    return BatteryState(level: level, isCharging: state == 2 || state == 3)
+  }
+
+  public func isLocked() async throws -> Bool {
+    let value = try await execute("mobile: isLocked", arguments: [:])
+    return (value as? Bool) == true
+  }
+
+  public func unlock() async throws {
+    _ = try await execute("mobile: unlock", arguments: [:])
+  }
+
   public func activateApp() async throws {
     _ = try await execute(
       "mobile: activateApp",
@@ -352,13 +346,8 @@ public actor AppiumSession: AppAutomationSession {
   }
 
   public func systemAlertText() async throws -> String? {
-    let sessionIdentifier = try activeSessionIdentifier()
     do {
-      let value = try await request(
-        method: "GET",
-        pathComponents: ["session", sessionIdentifier, "alert", "text"],
-        body: nil
-      )
+      let value = try await command("GET", ["alert", "text"])
       return value as? String ?? ""
     } catch AppiumAutomationError.noSuchAlert {
       return nil
@@ -370,12 +359,49 @@ public actor AppiumSession: AppAutomationSession {
   }
 
   private func execute(_ script: String, arguments: [String: Any]) async throws -> Any? {
-    let sessionIdentifier = try activeSessionIdentifier()
-    return try await request(
-      method: "POST",
-      pathComponents: ["session", sessionIdentifier, "execute", "sync"],
-      body: ["script": script, "args": [arguments]]
-    )
+    try await command("POST", ["execute", "sync"], body: ["script": script, "args": [arguments]])
+  }
+
+  /// Sends one command within the current session. A failed command drops
+  /// the session, so the next command reconnects instead of reusing a
+  /// session the device may no longer have.
+  private func command(
+    _ method: String,
+    _ pathComponents: [String],
+    body: [String: Any]? = nil
+  ) async throws -> Any? {
+    let identifier = try await connectedSessionIdentifier()
+    do {
+      return try await request(
+        method: method,
+        pathComponents: ["session", identifier] + pathComponents,
+        body: body
+      )
+    } catch AppiumAutomationError.noSuchAlert {
+      throw AppiumAutomationError.noSuchAlert
+    } catch {
+      await invalidateCurrentSession()
+      throw error
+    }
+  }
+
+  /// Reconnects at most once per interval, so a device that stays away is
+  /// retried steadily instead of in a tight loop.
+  private func connectedSessionIdentifier() async throws -> String {
+    if let sessionIdentifier {
+      return sessionIdentifier
+    }
+    if let lastConnectionAttempt,
+      ContinuousClock.now - lastConnectionAttempt < Self.reconnectInterval
+    {
+      throw AppiumAutomationError.commandFailed("waiting to reconnect to the device")
+    }
+    lastConnectionAttempt = .now
+    try await create()
+    guard let sessionIdentifier else {
+      throw AppiumAutomationError.malformedResponse("sessionId is missing")
+    }
+    return sessionIdentifier
   }
 
   private func invalidateCurrentSession() async {
@@ -409,8 +435,8 @@ public actor AppiumSession: AppAutomationSession {
       "appium:mjpegServerPort": configuration.wdaLocalPort + 1000,
       "appium:wdaLaunchTimeout": 120_000,
       "appium:wdaConnectionTimeout": 60_000,
-      "appium:wdaStartupRetries": 3,
-      "appium:wdaStartupRetryInterval": 20_000,
+      "appium:wdaStartupRetries": 2,
+      "appium:wdaStartupRetryInterval": 10_000,
       "appium:newCommandTimeout": 900,
     ]
     let value = try await request(
@@ -440,13 +466,6 @@ public actor AppiumSession: AppAutomationSession {
         ]
       ]
     )
-  }
-
-  private func activeSessionIdentifier() throws -> String {
-    guard let sessionIdentifier else {
-      throw AppiumAutomationError.commandFailed("the Appium session is closed")
-    }
-    return sessionIdentifier
   }
 
   private func request(

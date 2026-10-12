@@ -328,6 +328,7 @@ public enum OperationDefinitionError: Error, LocalizedError, Sendable, Equatable
   case unsupportedAction(String)
   case systemAlert(String)
   case coveredElement(action: String)
+  case deviceLocked
 
   public var errorDescription: String? {
     switch self {
@@ -345,6 +346,8 @@ public enum OperationDefinitionError: Error, LocalizedError, Sendable, Equatable
       return "A system alert needs a person: \(text)"
     case .coveredElement(let action):
       return "Action \(action) found its element covered by a screen the definition does not describe."
+    case .deviceLocked:
+      return "The device is locked and could not be unlocked. A person needs to unlock it."
     }
   }
 }
@@ -424,6 +427,14 @@ public struct OperationDefinitionAdapter: CaptureAppAdapter {
 
   public func perform(_ action: CaptureAction, from observation: CaptureObservation) async throws {
     if action == Self.activateApp {
+      if try await session.isLocked() {
+        // Unlocking only works without a passcode. With one, a person has to
+        // unlock the device, which is not a problem with the link.
+        try? await session.unlock()
+        if try await session.isLocked() {
+          throw OperationDefinitionError.deviceLocked
+        }
+      }
       try await session.activateApp()
     } else {
       guard let definitionAction = actionsByRuntimeAction[action] else {

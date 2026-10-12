@@ -116,6 +116,10 @@ private actor InMemoryCaptureAdapter: CaptureAppAdapter {
     observation = .state("completionPending")
   }
 
+  func showScreen(_ screen: String) {
+    observation = .state(screen)
+  }
+
   func currentScreen() -> CaptureObservation {
     observation
   }
@@ -191,6 +195,41 @@ final class DeviceWorkerTests: XCTestCase {
         InMemoryCaptureAdapter.startRecording,
       ]
     )
+  }
+
+  func testWorkerObservesWithoutTappingBeforeTheFirstCommand() async {
+    let adapter = InMemoryCaptureAdapter(screen: "recording")
+    let worker = DeviceWorker(deviceID: "test-device", adapter: adapter)
+
+    let snapshot = await worker.reconcileUntilStable()
+
+    let actions = await adapter.actionLog()
+    XCTAssertNil(snapshot.desiredState)
+    XCTAssertEqual(snapshot.phase, .idle)
+    XCTAssertEqual(snapshot.observation, .state("recording"))
+    XCTAssertEqual(actions, [])
+  }
+
+  func testPausedWorkerLeavesTheDeviceAloneUntilTheNextCommand() async {
+    let adapter = InMemoryCaptureAdapter(screen: "recording")
+    let worker = DeviceWorker(deviceID: "test-device", adapter: adapter)
+    await worker.setDesiredState(.paused)
+    _ = await worker.reconcileUntilStable()
+    let actionsWhenPaused = await adapter.actionLog().count
+
+    // A person opens a task during the break.
+    await adapter.showScreen("taskReady")
+    let duringBreak = await worker.reconcileUntilStable()
+    let actionsDuringBreak = await adapter.actionLog().count
+    XCTAssertEqual(duringBreak.observation, .state("taskReady"))
+    XCTAssertEqual(actionsDuringBreak, actionsWhenPaused)
+
+    await worker.setDesiredState(.paused)
+    _ = await worker.reconcileUntilStable()
+    let screen = await adapter.currentScreen()
+    let actions = await adapter.actionLog()
+    XCTAssertEqual(screen, .state("home"))
+    XCTAssertEqual(actions.last, InMemoryCaptureAdapter.closeTask)
   }
 
   func testUnknownScreenFailsClosedWithoutTapping() async {
@@ -344,5 +383,23 @@ final class DeviceWorkerTests: XCTestCase {
     XCTAssertEqual(finalSnapshot.phase, .needsAttention("Unknown screen: a permission prompt"))
     XCTAssertEqual(actions, [])
     XCTAssertEqual(snapshotAfterStop.phase, .stopped)
+  }
+}
+
+final class BatteryGuardTests: XCTestCase {
+  func testPausesOnceWhenTheLevelFallsToTheThreshold() {
+    var guardian = BatteryGuard(threshold: 0.10)
+
+    XCTAssertFalse(guardian.shouldPause(for: BatteryState(level: 0.40, isCharging: false)))
+    XCTAssertTrue(guardian.shouldPause(for: BatteryState(level: 0.10, isCharging: false)))
+    XCTAssertFalse(guardian.shouldPause(for: BatteryState(level: 0.08, isCharging: false)))
+  }
+
+  func testChargingDeviceIsNotPausedAndArmsTheGuardAgain() {
+    var guardian = BatteryGuard(threshold: 0.10)
+
+    XCTAssertTrue(guardian.shouldPause(for: BatteryState(level: 0.09, isCharging: false)))
+    XCTAssertFalse(guardian.shouldPause(for: BatteryState(level: 0.09, isCharging: true)))
+    XCTAssertTrue(guardian.shouldPause(for: BatteryState(level: 0.09, isCharging: false)))
   }
 }

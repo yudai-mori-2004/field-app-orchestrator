@@ -54,6 +54,10 @@ private actor FakeMinuteApp: AppAutomationSession {
   private var frontmost: String? = FakeMinuteApp.bundleIdentifier
   private var alert: String?
   private var droppedTaps: Set<String> = []
+  private var failingCalls = 0
+  private var locked = false
+  private var hasPasscode = false
+  private var tapsWithLostAnswers: Set<String> = []
   private let clipIsShort: Bool
   private var unknownDialog = false
 
@@ -66,8 +70,34 @@ private actor FakeMinuteApp: AppAutomationSession {
     unknownDialog = true
   }
 
+  /// The next calls fail the way a lost link to WebDriverAgent does.
+  func loseLink(forCalls count: Int) {
+    failingCalls = count
+  }
+
+  /// The tap lands, but its answer never reaches the Mac.
+  func loseAnswer(toTapOn name: String) {
+    tapsWithLostAnswers.insert(name)
+  }
+
+  private func failIfLinkIsDown() throws {
+    if failingCalls > 0 {
+      failingCalls -= 1
+      throw AppiumAutomationError.commandFailed("the link to the device is down")
+    }
+  }
+
   func showOtherApp() {
     frontmost = "com.apple.springboard"
+  }
+
+  func lock(withPasscode: Bool = false) {
+    locked = true
+    hasPasscode = withPasscode
+  }
+
+  func unlockByHand() {
+    locked = false
   }
 
   func showAlert(_ text: String) {
@@ -91,7 +121,8 @@ private actor FakeMinuteApp: AppAutomationSession {
   }
 
   func elements(matching selectors: [ElementSelector]) async throws -> [AutomationElement] {
-    renderedElements().filter { element in selectors.contains { $0.matches(element) } }
+    try failIfLinkIsDown()
+    return renderedElements().filter { element in selectors.contains { $0.matches(element) } }
   }
 
   func rect(of element: AutomationElement) async throws -> AutomationRect {
@@ -118,6 +149,7 @@ private actor FakeMinuteApp: AppAutomationSession {
   }
 
   func tap(_ element: AutomationElement) async throws {
+    try failIfLinkIsDown()
     guard renderedElements().contains(element) else {
       throw FakeAppError.notOnScreen(element.name)
     }
@@ -173,6 +205,9 @@ private actor FakeMinuteApp: AppAutomationSession {
     default:
       throw FakeAppError.unexpectedTap(element.name)
     }
+    if tapsWithLostAnswers.remove(element.name) != nil {
+      throw AppiumAutomationError.commandFailed("the answer to the tap was lost")
+    }
   }
 
   func drag(from start: AutomationPoint, to end: AutomationPoint) async throws {
@@ -196,10 +231,24 @@ private actor FakeMinuteApp: AppAutomationSession {
   }
 
   func frontmostBundleIdentifier() async throws -> String? {
-    frontmost
+    locked ? "com.apple.springboard" : frontmost
+  }
+
+  func isLocked() async throws -> Bool {
+    locked
+  }
+
+  func unlock() async throws {
+    guard !hasPasscode else {
+      throw AppiumAutomationError.commandFailed("Timed out while waiting until the screen gets unlocked")
+    }
+    locked = false
   }
 
   func activateApp() async throws {
+    guard !locked else {
+      throw AppiumAutomationError.commandFailed("the device is locked")
+    }
     frontmost = Self.bundleIdentifier
   }
 
@@ -214,7 +263,7 @@ private actor FakeMinuteApp: AppAutomationSession {
   }
 
   private func renderedElements() -> [AutomationElement] {
-    guard frontmost == Self.bundleIdentifier else { return [] }
+    guard frontmost == Self.bundleIdentifier, !locked else { return [] }
 
     func element(_ name: String, _ type: String, label: String? = nil) -> AutomationElement {
       AutomationElement(
@@ -337,11 +386,18 @@ private enum MinuteDefinition {
 }
 
 /// Reconciles until the worker settles, letting the fake app finish each
-/// countdown the worker waits for.
+/// countdown the worker waits for and retrying while the link is down.
 private func settle(_ worker: DeviceWorker, _ app: FakeMinuteApp) async -> DeviceWorkerSnapshot {
   var snapshot = await worker.reconcileUntilStable()
-  for _ in 0..<5 where snapshot.phase == .waitingForApp {
-    await app.finishCountdown()
+  for _ in 0..<8 {
+    switch snapshot.phase {
+    case .waitingForApp:
+      await app.finishCountdown()
+    case .reconnecting:
+      break
+    default:
+      return snapshot
+    }
     snapshot = await worker.reconcileUntilStable()
   }
   return snapshot
@@ -553,6 +609,41 @@ final class OperationDefinitionTests: XCTestCase {
     XCTAssertEqual(snapshot.observation, .state("assigned-task-card"))
   }
 
+  func testLockedDeviceIsUnlockedAndTheRecordingContinues() async throws {
+    let task = FakeMinuteApp.assignedTask
+    let app = FakeMinuteApp(screen: .recording(task))
+    await app.lock()
+    let worker = try MinuteDefinition.worker(for: app)
+
+    await worker.setDesiredState(.running)
+    let snapshot = await settle(worker, app)
+
+    let taps = await app.taps
+    XCTAssertEqual(snapshot.phase, .stable)
+    XCTAssertEqual(snapshot.observation, .state("recording"))
+    XCTAssertEqual(taps, [])
+  }
+
+  func testLockedDeviceWithAPasscodeWaitsForAPersonAndResumesOnTheNextCommand() async throws {
+    let task = FakeMinuteApp.assignedTask
+    let app = FakeMinuteApp(screen: .recording(task))
+    await app.lock(withPasscode: true)
+    let worker = try MinuteDefinition.worker(for: app)
+
+    await worker.setDesiredState(.running)
+    let locked = await settle(worker, app)
+    XCTAssertEqual(
+      locked.phase,
+      .needsAttention("The device is locked and could not be unlocked. A person needs to unlock it.")
+    )
+
+    await app.unlockByHand()
+    await worker.setDesiredState(.running)
+    let resumed = await settle(worker, app)
+    XCTAssertEqual(resumed.phase, .stable)
+    XCTAssertEqual(resumed.observation, .state("recording"))
+  }
+
   func testUnknownScreenNeedsAttentionWithoutTapping() async throws {
     let app = FakeMinuteApp(screen: .somethingElse)
     let worker = try MinuteDefinition.worker(for: app)
@@ -594,6 +685,36 @@ final class OperationDefinitionTests: XCTestCase {
     let taps = await app.taps
     XCTAssertEqual(snapshot.phase, .stable)
     XCTAssertEqual(taps, ["record-arm", "record-arm"])
+  }
+
+  func testLostLinkIsRetriedWithoutWaitingForAPerson() async throws {
+    let app = FakeMinuteApp(screen: .armed(FakeMinuteApp.assignedTask))
+    await app.loseLink(forCalls: 3)
+    let worker = try MinuteDefinition.worker(for: app)
+
+    await worker.setDesiredState(.running)
+    let firstAttempt = await worker.reconcileUntilStable()
+    guard case .reconnecting = firstAttempt.phase else {
+      return XCTFail("A lost link should be retried, not handed to a person.")
+    }
+    let snapshot = await settle(worker, app)
+
+    let screen = await app.screen
+    XCTAssertEqual(snapshot.phase, .stable)
+    XCTAssertEqual(screen, .recording(FakeMinuteApp.assignedTask))
+  }
+
+  func testTapWhoseAnswerWasLostIsNotRepeatedOnceTheScreenMoved() async throws {
+    let app = FakeMinuteApp(screen: .armed(FakeMinuteApp.assignedTask))
+    await app.loseAnswer(toTapOn: "record-arm")
+    let worker = try MinuteDefinition.worker(for: app)
+
+    await worker.setDesiredState(.running)
+    let snapshot = await settle(worker, app)
+
+    let taps = await app.taps
+    XCTAssertEqual(snapshot.phase, .stable)
+    XCTAssertEqual(taps, ["record-arm"])
   }
 
   func testMissingTaskCardStopsAfterSearchingBothWays() async throws {

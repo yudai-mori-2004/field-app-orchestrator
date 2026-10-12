@@ -36,6 +36,12 @@ public enum CaptureStep: Sendable, Equatable {
   case perform(CaptureAction)
 }
 
+/// An error from the link to the device rather than from the app. The worker
+/// keeps observing after one, because the link may come back.
+public protocol CaptureLinkError: Error {
+  var isLinkFailure: Bool { get }
+}
+
 public protocol CaptureAppAdapter: Sendable {
   func observe() async throws -> CaptureObservation
   func nextStep(
@@ -50,18 +56,20 @@ public enum DeviceWorkerPhase: Sendable, Equatable {
   case stable
   case waitingForApp
   case transitioning(CaptureAction)
+  case reconnecting(String)
   case needsAttention(String)
   case stopped
 }
 
 public struct DeviceWorkerSnapshot: Sendable, Equatable {
-  public let desiredState: DesiredCaptureState
+  /// Nil until the first command, while the worker only observes.
+  public let desiredState: DesiredCaptureState?
   public let observation: CaptureObservation?
   public let phase: DeviceWorkerPhase
   public let revision: UInt64
 
   public init(
-    desiredState: DesiredCaptureState,
+    desiredState: DesiredCaptureState?,
     observation: CaptureObservation?,
     phase: DeviceWorkerPhase,
     revision: UInt64
@@ -84,7 +92,7 @@ public actor DeviceWorker {
 
   private let adapter: any CaptureAppAdapter
   private let onEvent: (@Sendable (DeviceWorkerEvent) -> Void)?
-  private var desiredState: DesiredCaptureState = .paused
+  private var desiredState: DesiredCaptureState?
   private var observation: CaptureObservation? {
     didSet {
       if let observation, observation != oldValue {
@@ -104,6 +112,10 @@ public actor DeviceWorker {
   private var reconciliationWaiters: [CheckedContinuation<Void, Never>] = []
   private var isStopping = false
   private var shouldStop = false
+  /// Set once the paused state is reached. From then on the worker leaves
+  /// the device alone, so a person can use it during a break, until the next
+  /// command arrives.
+  private var leavesDeviceAlone = false
 
   public init(
     deviceID: String,
@@ -115,9 +127,16 @@ public actor DeviceWorker {
     self.onEvent = onEvent
   }
 
+  /// A new command also means a person has looked at the device, so it ends
+  /// a wait for attention the same way `acknowledgeAndRetry` does. The next
+  /// step is still planned from a fresh observation.
   public func setDesiredState(_ newState: DesiredCaptureState) {
     guard !isStopping, !shouldStop else { return }
     desiredState = newState
+    leavesDeviceAlone = false
+    if case .needsAttention = phase {
+      phase = .idle
+    }
     revision &+= 1
   }
 
@@ -128,6 +147,7 @@ public actor DeviceWorker {
     guard !isStopping, !shouldStop else { return snapshot() }
     isStopping = true
     desiredState = .paused
+    leavesDeviceAlone = false
     revision &+= 1
 
     while isReconciling {
@@ -150,6 +170,7 @@ public actor DeviceWorker {
   public func acknowledgeAndRetry() {
     guard case .needsAttention = phase, !isStopping, !shouldStop else { return }
     phase = .idle
+    leavesDeviceAlone = false
     revision &+= 1
   }
 
@@ -199,20 +220,30 @@ public actor DeviceWorker {
       do {
         let current = try await adapter.observe()
         observation = current
+        // Starting the worker must not change what the device is doing; a
+        // recording in progress continues until someone asks for a state.
+        guard let requested = desiredState else {
+          phase = .idle
+          return snapshot()
+        }
+        if leavesDeviceAlone {
+          return snapshot()
+        }
         if case .unknown(let detail) = current {
           phase = .needsAttention("Unknown screen: \(detail)")
           return snapshot()
         }
 
-        if desiredState != target {
-          target = desiredState
+        if requested != target {
+          target = requested
           observationsTowardTarget = 0
         }
         observationsTowardTarget += 1
 
-        switch try await adapter.nextStep(toward: target, from: current) {
+        switch try await adapter.nextStep(toward: requested, from: current) {
         case .settled:
           phase = .stable
+          leavesDeviceAlone = requested == .paused
           return snapshot()
         case .waitForApp:
           phase = .waitingForApp
@@ -223,12 +254,18 @@ public actor DeviceWorker {
           try await adapter.perform(action, from: current)
         }
       } catch {
-        if let localizedError = error as? LocalizedError,
-          let description = localizedError.errorDescription
-        {
-          phase = .needsAttention(description)
+        let description =
+          (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+        // A lost link says nothing about the app, and a tap whose answer was
+        // lost may or may not have landed. Either way the next step is
+        // planned from a fresh observation once the link is back.
+        if let linkError = error as? CaptureLinkError, linkError.isLinkFailure {
+          if case .reconnecting = phase {
+            return snapshot()
+          }
+          phase = .reconnecting(description)
         } else {
-          phase = .needsAttention(String(describing: error))
+          phase = .needsAttention(description)
         }
         return snapshot()
       }

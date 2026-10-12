@@ -2,36 +2,41 @@
 
 ## 通常フロー
 
-Mac上では、登録済みiPhoneごとに一つのDevice Workerと一つのAppiumセッションを起動します。各ワーカーには、操作対象アプリのコース定義を一つ割り当てます。
+Mac上では、iPhoneごとに一つのDevice Workerと一つのAppiumセッションを起動します。各端末にMinuteまたはClaruの操作定義を割り当て、同じ共通処理で実行します。
 
-```text
-Controller
-  ├─ Device Worker A ── Course Engine ── Minute course ── iPhone A
-  ├─ Device Worker B ── Course Engine ── Minute course ── iPhone B
-  └─ Device Worker C ── Course Engine ── Claru course  ── iPhone C
+```mermaid
+flowchart LR
+  input[開始・一時停止] --> worker[DeviceWorker]
+  worker --> adapter[CaptureCourseAdapter]
+  definition[アプリ別操作定義 JSON] --> adapter
+  adapter --> session[AppiumSession]
+  session --> wda[iPhone上のWebDriverAgent]
+  wda --> app[MinuteまたはClaru]
 ```
 
-MinuteとClaruは別の実行基盤ではありません。どのアプリを起動し、どの画面を確認し、次に何を押すかを表したコースだけが異なります。
+操作定義は、対象アプリ、画面判定条件、操作対象、状態遷移を記述するデータです。実行時には`CaptureCourseAdapter`が定義を参照して画面を判定し、現在画面と目標状態に対応する操作を選びます。
 
-ユーザーの開始・一時停止は、iPhoneへ直結したタップ命令ではなく、端末ごとの`running`または`paused`という目標状態です。Device Workerは現在画面と最新の目標状態をCourse Engineへ渡し、コースが返した一操作を直列に実行します。
+ユーザーの開始・一時停止は、端末ごとの`running`または`paused`という目標状態を更新します。Device Workerは`CaptureAppAdapter`インターフェースを通じて画面の観測、次の操作の選択、実行を一つずつ進めます。タップは`AppiumSession`を経由して対象端末へ送ります。
 
 ## 責務
 
-### Controller
+### 操作受付と端末管理
 
-- 登録端末、対象アプリ、コースの割り当て
+現在は共通の`field-app` CLIを一台につき一プロセス起動し、`--course`で操作定義のJSONを指定します。CLIは端末への接続とワーカーの起動を行い、開始・一時停止・状態確認・再試行を受け付けます。
+
+複数端末をまとめるControllerは、次の責務を持つ上位の管理機能として追加します。
+
+- 登録端末、対象アプリ、操作定義の割り当て
 - 端末ごとのワーカープロセス起動・停止
 - 状態、経過時間、再開回数、要対応状態の表示
 - 全体または個別の開始・一時停止・再試行
 - UI、CLI、物理入力から来た目標状態の統合
 
-現段階では共通の`field-app` CLIを一台につき一プロセス起動し、`--course`でMinuteまたはClaruを選びます。複数端末を束ねるGUIはこの境界の上へ追加します。
-
 ### Device Worker
 
 - 一台分の操作を直列化する
 - 最新の目標状態だけを保持する
-- 未知画面やコース実行失敗を`needsAttention`へ移す
+- 未知画面や操作の失敗を`needsAttention`へ移す
 - ユーザー入力と定期観測が重なっても二つの操作を同時送信しない
 
 ### Appium session
@@ -43,19 +48,19 @@ MinuteとClaruは別の実行基盤ではありません。どのアプリを起
 - 観測時のセッション切断だけを一度再接続する
 - 結果不明のタップを自動再送しない
 
-### Course Engine
+### 操作定義の実行
 
-`CaptureCourseAdapter`は、選択されたJSONコースを共通の`CaptureAppAdapter`として実行します。
+`CaptureCourseAdapter`は、`CaptureAppAdapter`の共通実装です。`CaptureCourseDefinition`として読み込んだJSONの操作定義に従って、次の処理を行います。
 
-- blockerを先に探す
+- 操作定義に登録されたblockerを先に探す
 - 四つの画面証明のうち一つだけが成立することを確認する
 - `running`または`paused`と現在画面に対応する遷移を一つ選ぶ
 - 操作対象が一つだけ存在することを確認してタップする
 - `stable`では何もせず、`needsOperator`では停止する
 
-### App course
+### アプリ別操作定義
 
-`apps/<app-name>/course.json`が次を所有します。
+`apps/<app-name>/course.example.json`には、次の項目を持つ定義例を置きます。実行時は、この例から作成した`config/local/`内の設定ファイルを読み込みます。
 
 - bundle identifier
 - `home`、`taskReady`、`recording`、`completionPending`を証明する要素
@@ -64,29 +69,26 @@ MinuteとClaruは別の実行基盤ではありません。どのアプリを起
 - 目標状態と現在画面の組ごとの遷移
 - ログイン、権限、警告を検出するblocker
 
-MinuteとClaruはこの同じスキーマを使います。アプリ追加のためにDevice WorkerやAppium接続を複製しません。画面構造が現在の四状態で表せないアプリが現れたときだけ、実在する差分に基づいてCourse Engineを拡張します。
+MinuteとClaruは同じ定義形式を使います。現在の形式は四つの画面状態とタップ操作を扱います。アプリ追加時もDevice WorkerとAppium接続を共用し、実際の操作手順がこの形式で表せない場合に、必要な処理と定義項目を拡張します。
 
-## 初期コースの状態遷移
+## 操作定義例の状態遷移
 
 ```text
-home
-  ── open-task ──> taskReady
-  ── start-recording ──> recording
-
-recording
-  ── 自然終了または stop-recording ──> completionPending
-
-completionPending
-  ── discard-recording ──> home
+home ── open-task ──> taskReady
+taskReady ── start-recording ──> recording
+recording ── 自然終了または stop-recording ──> completionPending
+completionPending ── discard-recording ──> home
 ```
 
-目標が`running`なら、discard後の`home`から次のチャンクを開始します。目標が`paused`なら、録画中は停止してdiscardし、`home`で待機します。コースの遷移を`needsOperator`へ変えれば、その画面ではタップせず停止します。
+目標が`running`なら、discard後の`home`から次のチャンクを開始します。目標が`paused`なら、録画中は停止してdiscardし、`home`で待機します。操作定義の該当する遷移を`needsOperator`へ変えれば、その画面ではタップせず停止します。
+
+上図は期待する画面の流れです。JSONの`transitions`には現在画面と目標状態に対する次の操作を記述し、操作後の画面は再観測で判定します。
 
 実際の状態は画面要素で確認し、時間だけから録画状態を推定しません。画面証明や操作対象が0件または複数件の場合も操作しません。
 
 ## エージェントの位置づけ
 
-AIエージェントは制御ループの外側に置きます。アプリ更新後の画面要素を調べ、MinuteやClaruのコースを修正する支援には使えますが、通常運転中に未知の画面を推測してタップしません。
+AIエージェントは制御ループの外側に置きます。アプリ更新後の画面要素を調べ、MinuteやClaruの操作定義を修正する支援には使えますが、通常運転中に未知の画面を推測してタップしません。
 
 ## 配布
 

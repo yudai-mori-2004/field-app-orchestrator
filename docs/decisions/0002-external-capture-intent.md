@@ -10,7 +10,7 @@
 
 ユーザーの入力は、Mac側の`running`または`paused`という目標状態として受け取ります。入力からiPhoneのタップを直接発火しません。
 
-端末ごとに一つだけ存在するDevice Workerが、対象アプリの現在画面と最新の目標状態を照合します。次に許される操作は、MinuteまたはClaruのコースを読み込んだ共通Course Engineが返し、Device Workerが一つずつ直列実行します。
+端末ごとに一つだけ存在するDevice Workerが、対象アプリの現在画面と最新の目標状態を照合します。`CaptureCourseAdapter`がMinuteまたはClaruの操作定義から次の操作を選び、Device Workerはその実行を一つずつ直列に進めます。
 
 Minute Dataのdiscard運用では次のように収束します。
 
@@ -25,7 +25,7 @@ Minute Dataのdiscard運用では次のように収束します。
 | `paused` | 開始待ち | ホームへ戻る |
 | `paused` | ホーム | 何もしない |
 
-録画中に30分チャンクが自然終了して完了待ちへ進んだ場合、discard後も目標状態が`running`なら次のチャンクを開始します。`paused`ならホームで待機します。ログイン、権限要求、警告、未確認画面では操作せず`needsAttention`へ移ります。
+録画中に30分チャンクが自然終了して完了待ちへ進んだ場合、discard後も目標状態が`running`なら次のチャンクを開始します。`paused`ならホームで待機します。画面を一意に判定できない場合、または操作定義に登録したログイン・権限要求・警告の要素を検出した場合は、操作せず`needsAttention`へ移ります。
 
 通常運転では、実機上のWebDriverAgentをAppium XCUITest Driverから利用し、Mac側に長時間のHTTPセッションを維持します。一回限りのXCUITestシナリオを通常運転へ使用しません。
 
@@ -39,6 +39,6 @@ Minute Dataのdiscard運用では次のように収束します。
 
 ## 完了操作の境界
 
-discard、保持、提出は外部状態への影響が異なります。Device Workerは各操作の影響を記録できる型だけを持ち、どの完了操作を選ぶかはアプリ別コースの最後の遷移へ閉じ込めます。
+discard、保持、提出は外部状態への影響が異なります。Device Workerは各操作の影響を記録できる型を持ち、録画完了後の処理はアプリ別操作定義の操作と遷移で指定します。
 
-MinuteとClaruの初期コースは、完了画面で`discard-recording`を選びます。操作せず停止したい場合は、その遷移を`needsOperator`へ変えます。提出を確定する操作は、画面と意味を実機で確認した後に該当コースだけへ追加します。共通Device WorkerとCourse Engineの制御規則は変更しません。
+MinuteとClaruの操作定義例は、完了画面で`discard-recording`を選びます。操作せず停止したい場合は、その遷移を`needsOperator`へ変えます。提出を確定する操作は、画面と意味を実機で確認した後に該当アプリの操作定義へ追加します。共通のDevice Workerと実行処理はその定義を使います。

@@ -1,6 +1,6 @@
-# Claru AI course
+# Claru AIの操作定義
 
-このディレクトリは、共通の`field-app`実行器にClaru AIの画面と操作経路を教えるコースです。Minute Dataと同じく、タスク選択、録画開始、一定時間後の完了処理、次チャンクの開始を一つの決定論的コースとして表します。
+このディレクトリには、Claru AIの画面判定条件、操作対象、状態遷移を記述したJSONの操作定義例を置きます。共通の`field-app`実行器が定義を読み込み、タスク選択、録画開始、録画終了後の処理、次チャンクの開始を進めます。
 
 [`course.example.json`](course.example.json)を`config/local/`へコピーし、現在インストールされているClaru AIのアクセシビリティ識別子へ置き換えます。
 
@@ -9,7 +9,7 @@ mkdir -p config/local
 cp apps/claru-app/course.example.json config/local/claru.json
 ```
 
-現在のコースは完了画面で`discard-recording`を実行します。Claruの録画や送信への影響を確認するまでは、実タスクで開始しないでください。
+現在の操作定義例は完了画面で`discard-recording`を実行します。Claruの録画や送信への影響を確認するまでは、実タスクで開始しないでください。
 
 ```sh
 swift run --package-path mac/controller-core field-app \

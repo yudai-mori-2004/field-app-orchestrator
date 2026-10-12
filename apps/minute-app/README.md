@@ -1,6 +1,6 @@
-# Minute Data course
+# Minute Dataの操作定義
 
-このディレクトリは、共通の`field-app`実行器にMinute Dataの画面と操作経路を教えるコースです。端末制御、開始・一時停止、Appium接続、切断処理を独自実装しません。
+このディレクトリには、Minute Dataの画面判定条件、操作対象、状態遷移を記述したJSONの操作定義例を置きます。共通の`field-app`実行器が定義を読み込み、端末への接続、開始・一時停止、操作の実行、切断処理を担当します。
 
 [`course.example.json`](course.example.json)を`config/local/`へコピーし、現在インストールされているMinute Dataのアクセシビリティ識別子へ置き換えます。
 
@@ -16,7 +16,7 @@ swift run --package-path mac/controller-core field-app \
   --validate-course config/local/minute.json
 ```
 
-現在のコースは、録画完了後に`discard-recording`を実行します。Minute Dataは完了前からアップロードする可能性があるため、discardは「サーバーへ一度も送信されない」ことを保証しません。
+現在の操作定義例は、録画完了後に`discard-recording`を実行します。Minute Dataは完了前からアップロードする可能性があるため、discardは「サーバーへ一度も送信されない」ことを保証しません。
 
 ```sh
 FAO_DEVICE_ID=<IPHONE_UDID> \

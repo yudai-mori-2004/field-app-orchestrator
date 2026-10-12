@@ -3,7 +3,7 @@ import XCTest
 @testable import FieldAppControllerCore
 
 private enum AdapterError: Error {
-  case invalidTransition(CaptureAction, CaptureScreen)
+  case invalidTransition(CaptureAction, String)
 }
 
 private actor InMemoryCaptureAdapter: CaptureAppAdapter {
@@ -28,7 +28,7 @@ private actor InMemoryCaptureAdapter: CaptureAppAdapter {
     impact: .deletesRecording
   )
 
-  private var screen: CaptureScreen
+  private var observation: CaptureObservation
   private var actions: [CaptureAction] = []
   private var inFlightActions = 0
   private var highestConcurrentActionCount = 0
@@ -36,46 +36,50 @@ private actor InMemoryCaptureAdapter: CaptureAppAdapter {
   private var performHook: (@Sendable (CaptureAction) async -> Void)?
 
   init(
-    screen: CaptureScreen = .home,
+    screen: String = "home",
     actionDelayNanoseconds: UInt64 = 0
   ) {
-    self.screen = screen
+    self.observation = .state(screen)
     self.actionDelayNanoseconds = actionDelayNanoseconds
+  }
+
+  init(unknown detail: String) {
+    self.observation = .unknown(detail)
+    self.actionDelayNanoseconds = 0
   }
 
   func onPerform(_ hook: @escaping @Sendable (CaptureAction) async -> Void) {
     performHook = hook
   }
 
-  func observe() async throws -> CaptureScreen {
-    screen
+  func observe() async throws -> CaptureObservation {
+    observation
   }
 
-  func nextAction(
-    desiredState: DesiredCaptureState,
-    screen: CaptureScreen
-  ) async throws -> CaptureAction? {
+  func nextStep(
+    toward desiredState: DesiredCaptureState,
+    from observation: CaptureObservation
+  ) async throws -> CaptureStep {
+    guard case .state(let screen) = observation else {
+      return .settled
+    }
     switch (desiredState, screen) {
-    case (.running, .home):
-      return Self.openTask
-    case (.running, .taskReady):
-      return Self.startRecording
-    case (.running, .recording):
-      return nil
-    case (.paused, .home):
-      return nil
-    case (.paused, .taskReady):
-      return Self.closeTask
-    case (.paused, .recording):
-      return Self.stopRecording
-    case (_, .completionPending):
-      return Self.discardRecording
-    case (_, .blocked):
-      return nil
+    case (.running, "home"):
+      return .perform(Self.openTask)
+    case (.running, "taskReady"):
+      return .perform(Self.startRecording)
+    case (.paused, "taskReady"):
+      return .perform(Self.closeTask)
+    case (.paused, "recording"):
+      return .perform(Self.stopRecording)
+    case (_, "completionPending"):
+      return .perform(Self.discardRecording)
+    default:
+      return .settled
     }
   }
 
-  func perform(_ action: CaptureAction) async throws {
+  func perform(_ action: CaptureAction, from observation: CaptureObservation) async throws {
     inFlightActions += 1
     highestConcurrentActionCount = max(highestConcurrentActionCount, inFlightActions)
     defer { inFlightActions -= 1 }
@@ -87,17 +91,20 @@ private actor InMemoryCaptureAdapter: CaptureAppAdapter {
       try await Task.sleep(nanoseconds: actionDelayNanoseconds)
     }
 
+    guard case .state(let screen) = self.observation else {
+      throw AdapterError.invalidTransition(action, "unknown")
+    }
     switch screen {
-    case .home where action == Self.openTask:
-      screen = .taskReady
-    case .taskReady where action == Self.closeTask:
-      screen = .home
-    case .taskReady where action == Self.startRecording:
-      screen = .recording
-    case .recording where action == Self.stopRecording:
-      screen = .completionPending
-    case .completionPending where action == Self.discardRecording:
-      screen = .home
+    case "home" where action == Self.openTask:
+      self.observation = .state("taskReady")
+    case "taskReady" where action == Self.closeTask:
+      self.observation = .state("home")
+    case "taskReady" where action == Self.startRecording:
+      self.observation = .state("recording")
+    case "recording" where action == Self.stopRecording:
+      self.observation = .state("completionPending")
+    case "completionPending" where action == Self.discardRecording:
+      self.observation = .state("home")
     default:
       throw AdapterError.invalidTransition(action, screen)
     }
@@ -106,15 +113,11 @@ private actor InMemoryCaptureAdapter: CaptureAppAdapter {
   }
 
   func simulateNaturalChunkEnd() {
-    screen = .completionPending
+    observation = .state("completionPending")
   }
 
-  func setScreen(_ newScreen: CaptureScreen) {
-    screen = newScreen
-  }
-
-  func currentScreen() -> CaptureScreen {
-    screen
+  func currentScreen() -> CaptureObservation {
+    observation
   }
 
   func actionLog() -> [CaptureAction] {
@@ -136,7 +139,7 @@ final class DeviceWorkerTests: XCTestCase {
 
     let firstScreen = await adapter.currentScreen()
     let firstActions = await adapter.actionLog()
-    XCTAssertEqual(firstScreen, .recording)
+    XCTAssertEqual(firstScreen, .state("recording"))
     XCTAssertEqual(
       firstActions,
       [InMemoryCaptureAdapter.openTask, InMemoryCaptureAdapter.startRecording]
@@ -147,7 +150,7 @@ final class DeviceWorkerTests: XCTestCase {
 
     let secondScreen = await adapter.currentScreen()
     let secondActions = await adapter.actionLog()
-    XCTAssertEqual(secondScreen, .recording)
+    XCTAssertEqual(secondScreen, .state("recording"))
     XCTAssertEqual(
       secondActions,
       [
@@ -170,13 +173,13 @@ final class DeviceWorkerTests: XCTestCase {
     await worker.setDesiredState(.paused)
     _ = await worker.reconcileUntilStable()
     let pausedScreen = await adapter.currentScreen()
-    XCTAssertEqual(pausedScreen, .home)
+    XCTAssertEqual(pausedScreen, .state("home"))
 
     await worker.setDesiredState(.running)
     _ = await worker.reconcileUntilStable()
     let resumedScreen = await adapter.currentScreen()
     let actions = await adapter.actionLog()
-    XCTAssertEqual(resumedScreen, .recording)
+    XCTAssertEqual(resumedScreen, .state("recording"))
     XCTAssertEqual(
       actions,
       [
@@ -190,17 +193,14 @@ final class DeviceWorkerTests: XCTestCase {
     )
   }
 
-  func testBlockedScreenFailsClosedWithoutTapping() async {
-    let adapter = InMemoryCaptureAdapter(screen: .blocked(.permissionPrompt))
+  func testUnknownScreenFailsClosedWithoutTapping() async {
+    let adapter = InMemoryCaptureAdapter(unknown: "a permission prompt")
     let worker = DeviceWorker(deviceID: "test-device", adapter: adapter)
 
     await worker.setDesiredState(.running)
     let snapshot = await worker.reconcileUntilStable()
 
-    XCTAssertEqual(
-      snapshot.phase,
-      .needsAttention("A permission prompt requires operator review.")
-    )
+    XCTAssertEqual(snapshot.phase, .needsAttention("Unknown screen: a permission prompt"))
     let actions = await adapter.actionLog()
     XCTAssertEqual(actions, [])
   }
@@ -218,7 +218,7 @@ final class DeviceWorkerTests: XCTestCase {
     let maximumConcurrentActions = await adapter.maximumConcurrentActions()
     let screen = await adapter.currentScreen()
     XCTAssertEqual(maximumConcurrentActions, 1)
-    XCTAssertEqual(screen, .recording)
+    XCTAssertEqual(screen, .state("recording"))
   }
 
   func testPauseArrivingDuringAnActionConvergesWithoutStartingRecording() async {
@@ -236,7 +236,7 @@ final class DeviceWorkerTests: XCTestCase {
 
     let screen = await adapter.currentScreen()
     let actions = await adapter.actionLog()
-    XCTAssertEqual(screen, .home)
+    XCTAssertEqual(screen, .state("home"))
     XCTAssertEqual(
       actions,
       [InMemoryCaptureAdapter.openTask, InMemoryCaptureAdapter.closeTask]
@@ -253,12 +253,12 @@ final class DeviceWorkerTests: XCTestCase {
 
     let screen = await adapter.currentScreen()
     let actions = await adapter.actionLog()
-    XCTAssertEqual(screen, .home)
+    XCTAssertEqual(screen, .state("home"))
     XCTAssertEqual(actions, [])
   }
 
   func testPauseLateInAChunkRestartStillSettles() async {
-    let adapter = InMemoryCaptureAdapter(screen: .completionPending)
+    let adapter = InMemoryCaptureAdapter(screen: "completionPending")
     let worker = DeviceWorker(deviceID: "test-device", adapter: adapter)
     await adapter.onPerform { action in
       if action == InMemoryCaptureAdapter.startRecording {
@@ -267,12 +267,12 @@ final class DeviceWorkerTests: XCTestCase {
     }
 
     await worker.setDesiredState(.running)
-    let snapshot = await worker.reconcileUntilStable()
+    let snapshot = await worker.reconcileUntilStable(maxTransitions: 4)
 
     let screen = await adapter.currentScreen()
     let actions = await adapter.actionLog()
     XCTAssertEqual(snapshot.phase, .stable)
-    XCTAssertEqual(screen, .home)
+    XCTAssertEqual(screen, .state("home"))
     XCTAssertEqual(
       actions,
       [
@@ -286,7 +286,7 @@ final class DeviceWorkerTests: XCTestCase {
   }
 
   func testPauseAndStopEndsTheRecordingBeforeStopping() async {
-    let adapter = InMemoryCaptureAdapter(screen: .recording)
+    let adapter = InMemoryCaptureAdapter(screen: "recording")
     let worker = DeviceWorker(deviceID: "test-device", adapter: adapter)
     await worker.setDesiredState(.running)
 
@@ -296,7 +296,7 @@ final class DeviceWorkerTests: XCTestCase {
     let actions = await adapter.actionLog()
     XCTAssertEqual(finalSnapshot.desiredState, .paused)
     XCTAssertEqual(finalSnapshot.phase, .stable)
-    XCTAssertEqual(screen, .home)
+    XCTAssertEqual(screen, .state("home"))
     XCTAssertEqual(
       actions,
       [InMemoryCaptureAdapter.stopRecording, InMemoryCaptureAdapter.discardRecording]
@@ -319,7 +319,7 @@ final class DeviceWorkerTests: XCTestCase {
     let screen = await adapter.currentScreen()
     let maximumConcurrentActions = await adapter.maximumConcurrentActions()
     XCTAssertEqual(finalSnapshot.phase, .stable)
-    XCTAssertEqual(screen, .home)
+    XCTAssertEqual(screen, .state("home"))
     XCTAssertEqual(maximumConcurrentActions, 1)
 
     let actionCountAtStop = await adapter.actionLog().count
@@ -332,7 +332,7 @@ final class DeviceWorkerTests: XCTestCase {
   }
 
   func testPauseAndStopLeavesAnAttentionStateUntouched() async {
-    let adapter = InMemoryCaptureAdapter(screen: .blocked(.permissionPrompt))
+    let adapter = InMemoryCaptureAdapter(unknown: "a permission prompt")
     let worker = DeviceWorker(deviceID: "test-device", adapter: adapter)
     await worker.setDesiredState(.running)
     _ = await worker.reconcileUntilStable()
@@ -341,10 +341,7 @@ final class DeviceWorkerTests: XCTestCase {
 
     let actions = await adapter.actionLog()
     let snapshotAfterStop = await worker.snapshot()
-    XCTAssertEqual(
-      finalSnapshot.phase,
-      .needsAttention("A permission prompt requires operator review.")
-    )
+    XCTAssertEqual(finalSnapshot.phase, .needsAttention("Unknown screen: a permission prompt"))
     XCTAssertEqual(actions, [])
     XCTAssertEqual(snapshotAfterStop.phase, .stopped)
   }

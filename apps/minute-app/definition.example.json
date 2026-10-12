@@ -1,0 +1,172 @@
+{
+  "identifier": "minute",
+  "displayName": "Minute Data",
+  "bundleIdentifier": "com.bakerdata.minute",
+  "afterRecording": "discard",
+  "states": [
+    { "id": "tasks", "present": [{ "name": "home-screen" }] },
+    { "id": "minutes", "present": [{ "name": "minutes-screen" }] },
+    { "id": "settings", "present": [{ "name": "settings-screen" }] },
+    {
+      "id": "assigned-task-card",
+      "present": [{ "name": "record-start-task" }, { "name": "REPLACE_WITH_TASK_TITLE", "type": "StaticText" }]
+    },
+    {
+      "id": "other-task-card",
+      "present": [{ "name": "record-start-task" }],
+      "absent": [{ "name": "REPLACE_WITH_TASK_TITLE", "type": "StaticText" }]
+    },
+    { "id": "armed", "present": [{ "name": "record-arm" }] },
+    { "id": "countdown", "present": [{ "name": "record-pending" }] },
+    {
+      "id": "recording",
+      "present": [{ "name": "record-stop" }],
+      "absent": [{ "name": "Recording too short", "type": "StaticText" }]
+    },
+    {
+      "id": "too-short-dialog",
+      "present": [{ "name": "Recording too short", "type": "StaticText" }]
+    },
+    {
+      "id": "review",
+      "present": [{ "name": "record-accept" }, { "name": "record-delete" }],
+      "absent": [{ "name": "Save this Minute?", "type": "StaticText" }, { "name": "Discard this recording?", "type": "StaticText" }]
+    },
+    { "id": "save-dialog", "present": [{ "name": "Save this Minute?", "type": "StaticText" }] },
+    {
+      "id": "discard-dialog",
+      "present": [{ "name": "Discard this recording?", "type": "StaticText" }]
+    },
+    { "id": "saved", "present": [{ "name": "record-continue" }] }
+  ],
+  "actions": [
+    {
+      "id": "open-tasks-tab",
+      "from": ["minutes", "settings"],
+      "tap": { "name": "nav-index" },
+      "to": "tasks",
+      "impact": "navigation"
+    },
+    {
+      "id": "open-assigned-task",
+      "from": ["tasks"],
+      "tap": { "namePrefix": "task-card-", "labelPrefix": "REPLACE_WITH_TASK_TITLE," },
+      "search": { "container": { "name": "home-tasks" }, "items": { "namePrefix": "task-card-" }, "maxSwipes": 40 },
+      "to": "assigned-task-card",
+      "impact": "navigation"
+    },
+    {
+      "id": "close-task-card",
+      "from": ["assigned-task-card", "other-task-card"],
+      "tap": { "name": "record-close" },
+      "to": "tasks",
+      "impact": "navigation"
+    },
+    {
+      "id": "start-task",
+      "from": ["assigned-task-card"],
+      "tap": { "name": "record-start-task" },
+      "to": "armed",
+      "impact": "navigation"
+    },
+    {
+      "id": "leave-camera",
+      "from": ["armed"],
+      "tap": { "name": "record-cancel" },
+      "to": "assigned-task-card",
+      "impact": "navigation"
+    },
+    {
+      "id": "start-recording",
+      "from": ["armed"],
+      "tap": { "name": "record-arm" },
+      "to": "countdown",
+      "impact": "startsRecording"
+    },
+    {
+      "id": "cancel-countdown",
+      "from": ["countdown"],
+      "tap": { "name": "record-cancel" },
+      "to": "armed",
+      "impact": "navigation"
+    },
+    {
+      "id": "stop-recording",
+      "from": ["recording"],
+      "tap": { "name": "record-stop" },
+      "to": "review",
+      "impact": "stopsRecording"
+    },
+    {
+      "id": "start-over",
+      "from": ["too-short-dialog"],
+      "tap": { "name": "Start over", "type": "Other" },
+      "to": "armed",
+      "impact": "navigation"
+    },
+    {
+      "id": "accept-too-short",
+      "from": ["too-short-dialog"],
+      "tap": { "name": "OK", "type": "Other" },
+      "to": "tasks",
+      "impact": "navigation"
+    },
+    {
+      "id": "open-save",
+      "from": ["review"],
+      "tap": { "name": "record-accept" },
+      "to": "save-dialog",
+      "impact": "submitsRecording"
+    },
+    {
+      "id": "confirm-save",
+      "from": ["save-dialog"],
+      "tap": { "name": "Save", "type": "Other" },
+      "to": "saved",
+      "impact": "submitsRecording"
+    },
+    {
+      "id": "cancel-save",
+      "from": ["save-dialog"],
+      "tap": { "name": "Cancel", "type": "Other" },
+      "to": "review",
+      "impact": "navigation"
+    },
+    {
+      "id": "open-discard",
+      "from": ["review"],
+      "tap": { "name": "record-delete" },
+      "to": "discard-dialog",
+      "impact": "deletesRecording"
+    },
+    {
+      "id": "confirm-discard",
+      "from": ["discard-dialog"],
+      "tap": { "name": "Discard", "type": "Other" },
+      "to": "armed",
+      "impact": "deletesRecording"
+    },
+    {
+      "id": "cancel-discard",
+      "from": ["discard-dialog"],
+      "tap": { "name": "Cancel", "type": "Other" },
+      "to": "review",
+      "impact": "navigation"
+    },
+    {
+      "id": "continue-task",
+      "from": ["saved"],
+      "tap": { "name": "record-continue" },
+      "to": "armed",
+      "impact": "navigation"
+    }
+  ],
+  "appTransitions": [
+    { "from": "countdown", "to": "recording" },
+    { "from": "recording", "to": "review" }
+  ],
+  "goals": {
+    "running": ["recording"],
+    "paused": ["assigned-task-card"]
+  }
+}

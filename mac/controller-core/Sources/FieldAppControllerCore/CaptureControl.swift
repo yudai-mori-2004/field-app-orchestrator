@@ -5,19 +5,11 @@ public enum DesiredCaptureState: String, Codable, CaseIterable, Sendable, Equata
   case paused
 }
 
-public enum CaptureBlockReason: Sendable, Equatable {
-  case unknownScreen(String)
-  case loginRequired
-  case permissionPrompt
-  case warning(String)
-}
-
-public enum CaptureScreen: Sendable, Equatable {
-  case home
-  case taskReady
-  case recording
-  case completionPending
-  case blocked(CaptureBlockReason)
+/// What the device shows, as far as the operation definition can tell.
+public enum CaptureObservation: Sendable, Equatable {
+  case state(String)
+  case outsideApp(String?)
+  case unknown(String)
 }
 
 public enum CaptureActionImpact: String, Codable, Sendable, Equatable, Hashable {
@@ -38,18 +30,25 @@ public struct CaptureAction: Sendable, Equatable, Hashable {
   }
 }
 
+public enum CaptureStep: Sendable, Equatable {
+  case settled
+  case waitForApp
+  case perform(CaptureAction)
+}
+
 public protocol CaptureAppAdapter: Sendable {
-  func observe() async throws -> CaptureScreen
-  func nextAction(
-    desiredState: DesiredCaptureState,
-    screen: CaptureScreen
-  ) async throws -> CaptureAction?
-  func perform(_ action: CaptureAction) async throws
+  func observe() async throws -> CaptureObservation
+  func nextStep(
+    toward desiredState: DesiredCaptureState,
+    from observation: CaptureObservation
+  ) async throws -> CaptureStep
+  func perform(_ action: CaptureAction, from observation: CaptureObservation) async throws
 }
 
 public enum DeviceWorkerPhase: Sendable, Equatable {
   case idle
   case stable
+  case waitingForApp
   case transitioning(CaptureAction)
   case needsAttention(String)
   case stopped
@@ -57,39 +56,63 @@ public enum DeviceWorkerPhase: Sendable, Equatable {
 
 public struct DeviceWorkerSnapshot: Sendable, Equatable {
   public let desiredState: DesiredCaptureState
-  public let observedScreen: CaptureScreen?
+  public let observation: CaptureObservation?
   public let phase: DeviceWorkerPhase
   public let revision: UInt64
 
   public init(
     desiredState: DesiredCaptureState,
-    observedScreen: CaptureScreen?,
+    observation: CaptureObservation?,
     phase: DeviceWorkerPhase,
     revision: UInt64
   ) {
     self.desiredState = desiredState
-    self.observedScreen = observedScreen
+    self.observation = observation
     self.phase = phase
     self.revision = revision
   }
+}
+
+public enum DeviceWorkerEvent: Sendable, Equatable {
+  case observed(CaptureObservation)
+  case performing(CaptureAction)
+  case phaseChanged(DeviceWorkerPhase)
 }
 
 public actor DeviceWorker {
   public let deviceID: String
 
   private let adapter: any CaptureAppAdapter
+  private let onEvent: (@Sendable (DeviceWorkerEvent) -> Void)?
   private var desiredState: DesiredCaptureState = .paused
-  private var observedScreen: CaptureScreen?
-  private var phase: DeviceWorkerPhase = .idle
+  private var observation: CaptureObservation? {
+    didSet {
+      if let observation, observation != oldValue {
+        onEvent?(.observed(observation))
+      }
+    }
+  }
+  private var phase: DeviceWorkerPhase = .idle {
+    didSet {
+      if phase != oldValue {
+        onEvent?(.phaseChanged(phase))
+      }
+    }
+  }
   private var revision: UInt64 = 0
   private var isReconciling = false
   private var reconciliationWaiters: [CheckedContinuation<Void, Never>] = []
   private var isStopping = false
   private var shouldStop = false
 
-  public init(deviceID: String, adapter: any CaptureAppAdapter) {
+  public init(
+    deviceID: String,
+    adapter: any CaptureAppAdapter,
+    onEvent: (@Sendable (DeviceWorkerEvent) -> Void)? = nil
+  ) {
     self.deviceID = deviceID
     self.adapter = adapter
+    self.onEvent = onEvent
   }
 
   public func setDesiredState(_ newState: DesiredCaptureState) {
@@ -101,7 +124,7 @@ public actor DeviceWorker {
   /// Leaves the device paused before the worker stops. An action already sent
   /// is allowed to finish, because a tap cannot be taken back. A worker that
   /// needs attention is stopped without tapping.
-  public func pauseAndStop(maxTransitions: Int = 4) async -> DeviceWorkerSnapshot {
+  public func pauseAndStop(maxTransitions: Int = 12) async -> DeviceWorkerSnapshot {
     guard !isStopping, !shouldStop else { return snapshot() }
     isStopping = true
     desiredState = .paused
@@ -133,14 +156,14 @@ public actor DeviceWorker {
   public func snapshot() -> DeviceWorkerSnapshot {
     DeviceWorkerSnapshot(
       desiredState: desiredState,
-      observedScreen: observedScreen,
+      observation: observation,
       phase: phase,
       revision: revision
     )
   }
 
   @discardableResult
-  public func reconcileUntilStable(maxTransitions: Int = 4) async -> DeviceWorkerSnapshot {
+  public func reconcileUntilStable(maxTransitions: Int = 12) async -> DeviceWorkerSnapshot {
     guard !isReconciling, !isStopping, !shouldStop else { return snapshot() }
     if case .needsAttention = phase {
       return snapshot()
@@ -174,15 +197,11 @@ public actor DeviceWorker {
       }
 
       do {
-        let screen = try await adapter.observe()
-        observedScreen = screen
-
-        switch screen {
-        case .blocked(let reason):
-          phase = .needsAttention(Self.describe(reason))
+        let current = try await adapter.observe()
+        observation = current
+        if case .unknown(let detail) = current {
+          phase = .needsAttention("Unknown screen: \(detail)")
           return snapshot()
-        case .home, .taskReady, .recording, .completionPending:
-          break
         }
 
         if desiredState != target {
@@ -191,18 +210,18 @@ public actor DeviceWorker {
         }
         observationsTowardTarget += 1
 
-        guard
-          let action = try await adapter.nextAction(
-            desiredState: target,
-            screen: screen
-          )
-        else {
+        switch try await adapter.nextStep(toward: target, from: current) {
+        case .settled:
           phase = .stable
           return snapshot()
+        case .waitForApp:
+          phase = .waitingForApp
+          return snapshot()
+        case .perform(let action):
+          phase = .transitioning(action)
+          onEvent?(.performing(action))
+          try await adapter.perform(action, from: current)
         }
-
-        phase = .transitioning(action)
-        try await adapter.perform(action)
       } catch {
         if let localizedError = error as? LocalizedError,
           let description = localizedError.errorDescription
@@ -218,18 +237,5 @@ public actor DeviceWorker {
     phase = .needsAttention(
       "The app did not reach the requested state within the transition limit.")
     return snapshot()
-  }
-
-  private static func describe(_ reason: CaptureBlockReason) -> String {
-    switch reason {
-    case .unknownScreen(let detail):
-      return "Unknown screen: \(detail)"
-    case .loginRequired:
-      return "Login is required."
-    case .permissionPrompt:
-      return "A permission prompt requires operator review."
-    case .warning(let detail):
-      return "Warning requires operator review: \(detail)"
-    }
   }
 }

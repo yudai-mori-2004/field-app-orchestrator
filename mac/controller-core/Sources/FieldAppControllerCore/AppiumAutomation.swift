@@ -1,40 +1,153 @@
 import Foundation
 
-public struct AutomationElement: Sendable, Equatable, Hashable {
-  public let identifier: String
+/// Selects elements by their accessibility name, optionally narrowed by
+/// element type and by the start of the label. React Native exposes `testID`
+/// as the name, and text without an identifier as its own text.
+public struct ElementSelector: Codable, Sendable, Equatable, Hashable {
+  public let name: String?
+  public let namePrefix: String?
+  public let type: String?
+  public let labelPrefix: String?
 
-  public init(identifier: String) {
-    self.identifier = identifier
+  public init(
+    name: String? = nil,
+    namePrefix: String? = nil,
+    type: String? = nil,
+    labelPrefix: String? = nil
+  ) {
+    self.name = name
+    self.namePrefix = namePrefix
+    self.type = type
+    self.labelPrefix = labelPrefix
+  }
+
+  public static func named(_ name: String, type: String? = nil) -> Self {
+    Self(name: name, type: type)
+  }
+
+  public static func prefixed(_ prefix: String, type: String? = nil) -> Self {
+    Self(namePrefix: prefix, type: type)
+  }
+
+  var value: String {
+    name ?? namePrefix ?? ""
+  }
+
+  var values: [String] {
+    [name, namePrefix, type, labelPrefix].compactMap { $0 }
+  }
+
+  func matches(_ element: AutomationElement) -> Bool {
+    if let type, element.type != "XCUIElementType\(type)" {
+      return false
+    }
+    if let labelPrefix, !element.label.hasPrefix(labelPrefix) {
+      return false
+    }
+    if let name {
+      return element.name == name
+    }
+    if let namePrefix {
+      return element.name.hasPrefix(namePrefix)
+    }
+    return false
+  }
+
+  func validate() throws {
+    guard (name == nil) != (namePrefix == nil), !value.isEmpty else {
+      throw AppiumAutomationError.invalidConfiguration(
+        "a selector needs exactly one non-empty name or namePrefix"
+      )
+    }
+    if let type {
+      guard !type.isEmpty, type.unicodeScalars.allSatisfy(CharacterSet.letters.contains) else {
+        throw AppiumAutomationError.invalidConfiguration(
+          "a selector type must be an element type name such as Button or Other"
+        )
+      }
+    }
+    if labelPrefix?.isEmpty == true {
+      throw AppiumAutomationError.invalidConfiguration("a selector labelPrefix cannot be empty")
+    }
+  }
+
+  var predicate: String {
+    var conditions = [
+      name.map { "name == \(Self.literal($0))" }
+        ?? "name BEGINSWITH \(Self.literal(namePrefix ?? ""))"
+    ]
+    if let type {
+      conditions.append("type == \(Self.literal("XCUIElementType\(type)"))")
+    }
+    if let labelPrefix {
+      conditions.append("label BEGINSWITH \(Self.literal(labelPrefix))")
+    }
+    return "(\(conditions.joined(separator: " AND ")))"
+  }
+
+  private static func literal(_ text: String) -> String {
+    let escaped = text
+      .replacingOccurrences(of: "\\", with: "\\\\")
+      .replacingOccurrences(of: "\"", with: "\\\"")
+    return "\"\(escaped)\""
   }
 }
 
-public struct AutomationLocator: Codable, Sendable, Equatable, Hashable {
-  public enum Strategy: String, Codable, Sendable, Hashable {
-    case accessibilityIdentifier
-    case identifierPrefix
+public struct AutomationElement: Sendable, Equatable, Hashable {
+  public let identifier: String
+  public let name: String
+  public let type: String
+  public let label: String
+
+  public init(identifier: String, name: String, type: String, label: String = "") {
+    self.identifier = identifier
+    self.name = name
+    self.type = type
+    self.label = label
+  }
+}
+
+public struct AutomationRect: Sendable, Equatable {
+  public let x: Double
+  public let y: Double
+  public let width: Double
+  public let height: Double
+
+  public init(x: Double, y: Double, width: Double, height: Double) {
+    self.x = x
+    self.y = y
+    self.width = width
+    self.height = height
   }
 
-  public let strategy: Strategy
-  public let value: String
+  public var midX: Double { x + width / 2 }
+  public var midY: Double { y + height / 2 }
+}
 
-  public init(strategy: Strategy, value: String) {
-    self.strategy = strategy
-    self.value = value
-  }
+public struct AutomationPoint: Sendable, Equatable {
+  public let x: Double
+  public let y: Double
 
-  public static func accessibilityIdentifier(_ value: String) -> Self {
-    Self(strategy: .accessibilityIdentifier, value: value)
-  }
-
-  public static func identifierPrefix(_ value: String) -> Self {
-    Self(strategy: .identifierPrefix, value: value)
+  public init(x: Double, y: Double) {
+    self.x = x
+    self.y = y
   }
 }
 
 public protocol AppAutomationSession: Sendable {
-  func elements(matching locator: AutomationLocator) async throws -> [AutomationElement]
+  /// Every element that matches any of the selectors, read in one query.
+  func elements(matching selectors: [ElementSelector]) async throws -> [AutomationElement]
+  func rect(of element: AutomationElement) async throws -> AutomationRect
+  /// False while something such as a dialog covers the element.
+  func isHittable(_ element: AutomationElement) async throws -> Bool
   func tap(_ element: AutomationElement) async throws
-  func isAlive() async -> Bool
+  func drag(from start: AutomationPoint, to end: AutomationPoint) async throws
+  /// Taps the status bar, which iOS answers by scrolling the frontmost list
+  /// back to its top.
+  func scrollToTop() async throws
+  func frontmostBundleIdentifier() async throws -> String?
+  func activateApp() async throws
+  func systemAlertText() async throws -> String?
   func close() async
 }
 
@@ -42,6 +155,7 @@ public enum AppiumAutomationError: Error, LocalizedError, Sendable, Equatable {
   case invalidConfiguration(String)
   case malformedResponse(String)
   case commandFailed(String)
+  case noSuchAlert
 
   public var errorDescription: String? {
     switch self {
@@ -51,6 +165,8 @@ public enum AppiumAutomationError: Error, LocalizedError, Sendable, Equatable {
       return "Malformed Appium response: \(detail)"
     case .commandFailed(let detail):
       return "Appium command failed: \(detail)"
+    case .noSuchAlert:
+      return "No system alert is open."
     }
   }
 }
@@ -114,38 +230,76 @@ public actor AppiumSession: AppAutomationSession {
   }
 
   public func elements(
-    matching locator: AutomationLocator
+    matching selectors: [ElementSelector]
   ) async throws -> [AutomationElement] {
     do {
-      return try await elementsOnce(matching: locator)
+      return try await elementsOnce(matching: selectors)
     } catch AppiumAutomationError.commandFailed {
       await invalidateCurrentSession()
       try await create()
-      return try await elementsOnce(matching: locator)
+      return try await elementsOnce(matching: selectors)
     }
   }
 
   private func elementsOnce(
-    matching locator: AutomationLocator
+    matching selectors: [ElementSelector]
   ) async throws -> [AutomationElement] {
+    guard !selectors.isEmpty else { return [] }
     let sessionIdentifier = try activeSessionIdentifier()
-    let query = try Self.query(for: locator)
     let value = try await request(
       method: "POST",
       pathComponents: ["session", sessionIdentifier, "elements"],
-      body: query
+      body: [
+        "using": "-ios predicate string",
+        "value": selectors.map(\.predicate).joined(separator: " OR "),
+      ]
     )
 
     guard let rawElements = value as? [[String: Any]] else {
       throw AppiumAutomationError.malformedResponse("elements result is not an array")
     }
-
     return try rawElements.map { rawElement in
       guard let identifier = rawElement[Self.webDriverElementKey] as? String else {
         throw AppiumAutomationError.malformedResponse("element identifier is missing")
       }
-      return AutomationElement(identifier: identifier)
+      return AutomationElement(
+        identifier: identifier,
+        name: rawElement["attribute/name"] as? String ?? "",
+        type: rawElement["type"] as? String ?? "",
+        label: rawElement["label"] as? String ?? ""
+      )
     }
+  }
+
+  public func rect(of element: AutomationElement) async throws -> AutomationRect {
+    let sessionIdentifier = try activeSessionIdentifier()
+    let value = try await request(
+      method: "GET",
+      pathComponents: ["session", sessionIdentifier, "element", element.identifier, "rect"],
+      body: nil
+    )
+    guard
+      let rect = value as? [String: Any],
+      let x = (rect["x"] as? NSNumber)?.doubleValue,
+      let y = (rect["y"] as? NSNumber)?.doubleValue,
+      let width = (rect["width"] as? NSNumber)?.doubleValue,
+      let height = (rect["height"] as? NSNumber)?.doubleValue
+    else {
+      throw AppiumAutomationError.malformedResponse("element rect is incomplete")
+    }
+    return AutomationRect(x: x, y: y, width: width, height: height)
+  }
+
+  public func isHittable(_ element: AutomationElement) async throws -> Bool {
+    let sessionIdentifier = try activeSessionIdentifier()
+    let value = try await request(
+      method: "GET",
+      pathComponents: [
+        "session", sessionIdentifier, "element", element.identifier, "attribute", "hittable",
+      ],
+      body: nil
+    )
+    return (value as? String) == "true" || (value as? Bool) == true
   }
 
   public func tap(_ element: AutomationElement) async throws {
@@ -168,22 +322,60 @@ public actor AppiumSession: AppAutomationSession {
     }
   }
 
-  public func isAlive() async -> Bool {
-    guard let sessionIdentifier else { return false }
+  public func drag(from start: AutomationPoint, to end: AutomationPoint) async throws {
+    _ = try await execute(
+      "mobile: dragFromToForDuration",
+      arguments: [
+        "fromX": start.x,
+        "fromY": start.y,
+        "toX": end.x,
+        "toY": end.y,
+        "duration": 0.4,
+      ]
+    )
+  }
+
+  public func scrollToTop() async throws {
+    _ = try await execute("mobile: tap", arguments: ["x": 60, "y": 12])
+  }
+
+  public func frontmostBundleIdentifier() async throws -> String? {
+    let value = try await execute("mobile: activeAppInfo", arguments: [:])
+    return (value as? [String: Any])?["bundleId"] as? String
+  }
+
+  public func activateApp() async throws {
+    _ = try await execute(
+      "mobile: activateApp",
+      arguments: ["bundleId": configuration.bundleIdentifier]
+    )
+  }
+
+  public func systemAlertText() async throws -> String? {
+    let sessionIdentifier = try activeSessionIdentifier()
     do {
-      _ = try await request(
+      let value = try await request(
         method: "GET",
-        pathComponents: ["session", sessionIdentifier],
+        pathComponents: ["session", sessionIdentifier, "alert", "text"],
         body: nil
       )
-      return true
-    } catch {
-      return false
+      return value as? String ?? ""
+    } catch AppiumAutomationError.noSuchAlert {
+      return nil
     }
   }
 
   public func close() async {
     await invalidateCurrentSession()
+  }
+
+  private func execute(_ script: String, arguments: [String: Any]) async throws -> Any? {
+    let sessionIdentifier = try activeSessionIdentifier()
+    return try await request(
+      method: "POST",
+      pathComponents: ["session", sessionIdentifier, "execute", "sync"],
+      body: ["script": script, "args": [arguments]]
+    )
   }
 
   private func invalidateCurrentSession() async {
@@ -197,13 +389,15 @@ public actor AppiumSession: AppAutomationSession {
   }
 
   private func create() async throws {
+    // A new session must attach to the running app. Relaunching it would end
+    // a recording in progress, and sessions are recreated after disconnects.
     let capabilities: [String: Any] = [
       "platformName": "iOS",
       "appium:automationName": "XCUITest",
       "appium:udid": configuration.deviceID,
       "appium:bundleId": configuration.bundleIdentifier,
       "appium:noReset": true,
-      "appium:forceAppLaunch": true,
+      "appium:forceAppLaunch": false,
       "appium:shouldTerminateApp": false,
       "appium:useNewWDA": false,
       "appium:xcodeOrgId": configuration.developmentTeam,
@@ -232,6 +426,20 @@ public actor AppiumSession: AppAutomationSession {
       throw AppiumAutomationError.malformedResponse("sessionId is missing")
     }
     sessionIdentifier = identifier
+
+    // Capture apps keep their main thread busy, so waiting for idle would
+    // delay every tap by the full timeout. Readiness is judged from the screen.
+    _ = try await request(
+      method: "POST",
+      pathComponents: ["session", identifier, "appium", "settings"],
+      body: [
+        "settings": [
+          "waitForIdleTimeout": 0,
+          "shouldUseCompactResponses": false,
+          "elementResponseAttributes": "type,attribute/name,label",
+        ]
+      ]
+    )
   }
 
   private func activeSessionIdentifier() throws -> String {
@@ -239,28 +447,6 @@ public actor AppiumSession: AppAutomationSession {
       throw AppiumAutomationError.commandFailed("the Appium session is closed")
     }
     return sessionIdentifier
-  }
-
-  private static func query(for locator: AutomationLocator) throws -> [String: Any] {
-    guard !locator.value.isEmpty else {
-      throw AppiumAutomationError.invalidConfiguration("an element locator is empty")
-    }
-
-    switch locator.strategy {
-    case .accessibilityIdentifier:
-      return ["using": "accessibility id", "value": locator.value]
-    case .identifierPrefix:
-      let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "._:-"))
-      guard locator.value.unicodeScalars.allSatisfy(allowed.contains) else {
-        throw AppiumAutomationError.invalidConfiguration(
-          "identifier prefixes may contain only letters, numbers, dot, underscore, colon, and hyphen"
-        )
-      }
-      return [
-        "using": "-ios predicate string",
-        "value": "identifier BEGINSWITH '\(locator.value)'",
-      ]
-    }
   }
 
   private func request(
@@ -303,17 +489,17 @@ public actor AppiumSession: AppAutomationSession {
     }
     let value = payload["value"]
 
-    if !(200..<300).contains(httpResponse.statusCode) {
-      let message = (value as? [String: Any])?["message"] as? String
-      throw AppiumAutomationError.commandFailed(
-        message ?? "HTTP \(httpResponse.statusCode)"
-      )
-    }
     if let errorValue = value as? [String: Any],
       let errorName = errorValue["error"] as? String
     {
+      if errorName == "no such alert" {
+        throw AppiumAutomationError.noSuchAlert
+      }
       let message = errorValue["message"] as? String ?? errorName
       throw AppiumAutomationError.commandFailed(message)
+    }
+    if !(200..<300).contains(httpResponse.statusCode) {
+      throw AppiumAutomationError.commandFailed("HTTP \(httpResponse.statusCode)")
     }
     return value
   }

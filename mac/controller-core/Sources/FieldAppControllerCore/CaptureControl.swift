@@ -1,6 +1,6 @@
 import Foundation
 
-public enum DesiredCaptureState: String, Sendable, Equatable {
+public enum DesiredCaptureState: String, Codable, CaseIterable, Sendable, Equatable, Hashable {
   case running
   case paused
 }
@@ -20,7 +20,7 @@ public enum CaptureScreen: Sendable, Equatable {
   case blocked(CaptureBlockReason)
 }
 
-public enum CaptureActionImpact: String, Sendable, Equatable {
+public enum CaptureActionImpact: String, Codable, Sendable, Equatable, Hashable {
   case navigation
   case startsRecording
   case stopsRecording
@@ -28,7 +28,7 @@ public enum CaptureActionImpact: String, Sendable, Equatable {
   case submitsRecording
 }
 
-public struct CaptureAction: Sendable, Equatable {
+public struct CaptureAction: Sendable, Equatable, Hashable {
   public let identifier: String
   public let impact: CaptureActionImpact
 

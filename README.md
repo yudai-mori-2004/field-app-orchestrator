@@ -1,25 +1,53 @@
 # Field App Orchestrator
 
-Field App Orchestratorは、現場のMacから複数のiPhoneを個別に監視し、販売先アプリで繰り返し必要になる操作を補助するシステムです。初回設定後の通常稼働では、ヘッドマウントしたiPhoneを装着者が触らず、Mac側から開始・一時停止できる状態を目指します。
+Field App Orchestratorは、エゴセントリックデータ収集用モバイルアプリの反復操作を自動化するシステムです。現在の対象はMinute DataとClaru AIです。
 
-一台につき一つのDevice Workerだけが操作権を持ちます。Mac UI、CLI、物理入力などはiPhoneへ直接タップを送らず、`running`または`paused`という目標状態を更新します。ワーカーは画面を再観測して既知の操作だけを直列実行し、対象要素を一意に確認できない場合や未知の画面では、その端末だけを停止します。
+どちらのアプリでも、撮影前のタスク選択、一定時間ごとの録画終了、次の撮影開始が必要です。本システムは、初回設定後の通常稼働ではヘッドマウントしたiPhoneを装着者が触らず、Mac側から開始・一時停止できる状態を目指します。
 
-## 実装単位
+## エンジンとコース
+
+共通部分は、ゲームエンジンとコースの関係に分けています。
+
+```text
+共通エンジン
+  ├─ Appium / WebDriverAgent接続
+  ├─ iPhoneごとのDevice Worker
+  ├─ running / paused入力
+  ├─ 操作の直列化と切断処理
+  └─ 未知画面での安全停止
+
+アプリ別コース
+  ├─ minute-app/course.json
+  └─ claru-app/course.json
+       ├─ bundle identifier
+       ├─ 各画面を証明する要素
+       ├─ タップ対象と操作の影響
+       └─ 目標状態ごとの遷移
+```
+
+MinuteとClaruは別のエンジンや製品ではなく、同じ実行器に読み込ませる二つのコースです。新しい収集アプリを追加するときも、通常はSwiftコードを複製せず、新しい`apps/<app-name>/course.json`を追加します。
+
+コースのフィールドと検証規則は[`docs/course-format.md`](docs/course-format.md)にまとめています。
+
+## リポジトリ構成
 
 ```text
 apps/
-  minute-app/                    Minute Data本番アダプターとCLI
+  minute-app/                    Minute Dataのコース
+  claru-app/                     Claru AIのコース
 mac/
-  controller-core/               端末ワーカーとAppium HTTP接続
+  controller-core/               共通実行器、端末ワーカー、Appium接続
 docs/                            通常フロー、運用、設計判断
 tools/                           Appiumセットアップと公開前検査
 ```
 
-新しい販売先アプリは`apps/<app-name>/`へ独立して追加します。bundle identifier、画面状態、操作対象、状態遷移は各アプリ側に置き、端末接続、操作の直列化、開始・一時停止、監査可能な操作種別は共通層に置きます。仕様がないアプリの空実装や汎用DSLは作りません。
+一台につき一つのDevice Workerだけが操作権を持ちます。Mac UI、CLI、物理入力などはiPhoneへ直接タップを送らず、`running`または`paused`という目標状態を更新します。ワーカーは選択されたコースを読み、画面を再観測して既知の操作だけを直列実行します。
 
-## Minute Data
+画面証明や操作対象が0件または複数件の場合、ログイン・権限・警告・未知画面の場合は、その端末だけを停止します。タップの応答が失われた場合も自動再送せず、実画面の再確認を待ちます。
 
-[`apps/minute-app`](apps/minute-app/README.md)には、Minute Dataの次の経路があります。
+## コースの通常フロー
+
+MinuteとClaruの初期コースは、同じ撮影ループを表します。
 
 ```text
 running
@@ -34,13 +62,9 @@ paused
   → ホームで待機する
 ```
 
-完了時の挙動は`MinuteCompletionPolicy`に閉じ込めています。現時点では`discardAfterEachChunk`と、操作せず停止する`requireOperator`だけを実装し、提出を確定する操作は実装していません。
-
-Minute Dataは録画中または完了前からアップロードする可能性があります。したがって、最後にdiscardすることは「データがサーバーへ一度も送られない」ことの保証にはなりません。実アプリでの確認は対象タスクと影響を確定してから行います。
+discard、保持、提出のどれを実行するかもコースの最後の遷移です。提出を確定する操作はまだどちらのコースにも入れていません。discardは、それ以前にアプリが行ったアップロードを取り消す保証にはなりません。
 
 ## 開発と実行
-
-Node.js、Appium、XCUITest Driverの版は固定しています。
 
 ```sh
 npm run setup:appium
@@ -48,24 +72,28 @@ npm run doctor:appium
 npm run appium
 ```
 
-Minuteの端末別起動と設定方法は[`apps/minute-app/README.md`](apps/minute-app/README.md)を参照してください。
+対象アプリのコース例を`config/local/`へコピーし、現在版アプリのアクセシビリティ識別子へ置き換えます。具体的な起動方法は[Minute course](apps/minute-app/README.md)と[Claru course](apps/claru-app/README.md)にあります。
+
+```sh
+swift run --package-path mac/controller-core field-app \
+  --validate-course config/local/minute.json
+```
 
 ```sh
 swift test --package-path mac/controller-core
-swift test --package-path apps/minute-app
+swift build -c release --package-path mac/controller-core
 ```
 
 ## 現在地
 
 - USB接続した実機で、AppiumからWebDriverAgentを起動・再利用できることは確認済みです。
-- 複数端末の操作を一台ずつ独立したワーカーへ分ける境界があります。
-- 観測中のセッション切断は一度だけ再接続し、結果不明のタップは自動再送しません。
-- Minuteの完了後discard、自動再開、任意停止は、本番アダプターを通る決定論的テストで確認しています。
-- 実Minuteの録画・discard操作はまだ実行していません。画面識別子を現在版で確定した後に実機確認します。
-- Wi-Fi接続、切断復旧、二台同時運転、8時間連続運転は次の実機検証です。
+- 一つの共通実行器がMinuteまたはClaruのコースを読み込めます。
+- 完了後discard、自動再開、任意停止、未知画面、重複要素は、共通コース実行器を通るテストで確認しています。
+- 実Minute・実Claruの録画とdiscardはまだ実行していません。各アプリの現在版で画面識別子を確定した後に実機確認します。
+- Wi-Fi接続、二台同時運転、切断復旧、8時間連続運転は次の実機検証です。
 
 ## 公開リポジトリとしての扱い
 
-端末ID、署名情報、対象タスク、診断出力、スクリーンショット、録画、ローカル設定はコミットしません。追跡ファイルは[`tools/check_public_tree.py`](tools/check_public_tree.py)で検査し、pushとpull requestでも同じ検査を実行します。
+端末ID、署名情報、対象タスク、診断出力、スクリーンショット、録画、ローカル設定はコミットしません。追跡ファイルは[`tools/check_public_tree.py`](tools/check_public_tree.py)で検査します。
 
 公開されていることはコードの利用許諾を意味しません。ライセンスは未決定です。

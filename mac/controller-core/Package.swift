@@ -12,9 +12,17 @@ let package = Package(
       name: "FieldAppControllerCore",
       targets: ["FieldAppControllerCore"]
     ),
+    .executable(
+      name: "field-app",
+      targets: ["FieldAppCLI"]
+    ),
   ],
   targets: [
     .target(name: "FieldAppControllerCore"),
+    .executableTarget(
+      name: "FieldAppCLI",
+      dependencies: ["FieldAppControllerCore"]
+    ),
     .testTarget(
       name: "FieldAppControllerCoreTests",
       dependencies: ["FieldAppControllerCore"]

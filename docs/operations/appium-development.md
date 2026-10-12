@@ -1,6 +1,6 @@
 # Appium実機開発
 
-通常運転では、Appium XCUITest Driverが実機上のWebDriverAgentを維持します。一台分のDevice Workerは、このHTTPセッションから画面を観測し、アプリ固有アダプターが許した操作を一回ずつ送ります。
+通常運転では、Appium XCUITest Driverが実機上のWebDriverAgentを維持します。一台分のDevice Workerは、このHTTPセッションから画面を観測し、選択されたアプリ別コースが許した操作を一回ずつ送ります。
 
 ## 初回セットアップ
 
@@ -21,9 +21,19 @@ iPhoneでは、Macとの信頼、Developer Mode、対象アプリへのログイ
 npm run appium
 ```
 
-Appiumサーバーは共通で一つ起動できます。端末ごとの`minute-app`プロセスが別セッションを作ります。各端末には異なる`FAO_WDA_LOCAL_PORT`を割り当て、その1000番後に使うMJPEGポートも重複させません。
+Appiumサーバーは共通で一つ起動できます。端末ごとの`field-app`プロセスが、割り当てられたMinuteまたはClaruのコースを読み、別セッションを作ります。各端末には異なる`FAO_WDA_LOCAL_PORT`を割り当て、その1000番後に使うMJPEGポートも重複させません。
 
-端末UDIDと署名Team IDは環境変数で実行時だけ渡し、設定ファイルやシェル履歴を公開リポジトリへ入れません。アプリ固有の起動例は[`apps/minute-app/README.md`](../../apps/minute-app/README.md)にあります。
+端末UDIDと署名Team IDは環境変数で実行時だけ渡し、設定ファイルやシェル履歴を公開リポジトリへ入れません。コースごとの起動例は[`apps/minute-app/README.md`](../../apps/minute-app/README.md)と[`apps/claru-app/README.md`](../../apps/claru-app/README.md)にあります。
+
+各`field-app`プロセスは`paused`で起動します。標準入力から次の命令を送ります。
+
+- `start`: その端末を`running`へ切り替える
+- `pause`: 録画中なら停止し、コースの完了遷移を通って`paused`へ収束させる
+- `status`: 目標状態、観測画面、ワーカー状態を表示する
+- `retry`: `needsAttention`を確認した後、現在画面の再観測から再開する
+- `quit`: `paused`へ収束させてセッションを閉じる
+
+複数台では、一台につき一つの`field-app`プロセスを起動し、`FAO_DEVICE_ID`、`FAO_DEVICE_LABEL`、`FAO_WDA_LOCAL_PORT`を端末ごとに分けます。ユーザー入力はiPhoneへ直接タップせず、各ワーカーの目標状態だけを変更します。
 
 ## 長時間セッション
 
@@ -41,6 +51,6 @@ Appiumサーバーは共通で一つ起動できます。端末ごとの`minute-
 
 ## 実アプリの安全境界
 
-アクセシビリティ識別子はアプリ版ごとにローカル設定で確定します。対象を一意に確認できなければタップしません。実Minuteでの録画・discardは外部状態を変えるため、対象アカウントとタスクを確定した実機確認として別に実施します。
+アクセシビリティ識別子はアプリ版ごとにローカルのコース設定で確定します。対象を一意に確認できなければタップしません。実Minute・実Claruでの録画とdiscardは外部状態を変えるため、対象アカウントとタスクを確定した実機確認として別に実施します。
 
-discardは完了画面での操作であり、それ以前のアップロードを取り消す保証ではありません。提出を確定する操作はまだ本番アダプターに実装していません。
+discardは完了画面での操作であり、それ以前のアップロードを取り消す保証ではありません。提出を確定する操作はまだどちらのコースにも入れていません。

@@ -1,0 +1,126 @@
+{
+  "identifier": "minute",
+  "displayName": "Minute Data",
+  "bundleIdentifier": "com.bakerdata.minute",
+  "screenProofs": [
+    {
+      "screen": "home",
+      "locator": {
+        "strategy": "accessibilityIdentifier",
+        "value": "REPLACE_WITH_HOME_PROOF"
+      }
+    },
+    {
+      "screen": "taskReady",
+      "locator": {
+        "strategy": "accessibilityIdentifier",
+        "value": "REPLACE_WITH_TASK_READY_PROOF"
+      }
+    },
+    {
+      "screen": "recording",
+      "locator": {
+        "strategy": "accessibilityIdentifier",
+        "value": "REPLACE_WITH_RECORDING_PROOF"
+      }
+    },
+    {
+      "screen": "completionPending",
+      "locator": {
+        "strategy": "accessibilityIdentifier",
+        "value": "REPLACE_WITH_COMPLETION_PROOF"
+      }
+    }
+  ],
+  "actions": [
+    {
+      "identifier": "open-task",
+      "impact": "navigation",
+      "locator": {
+        "strategy": "accessibilityIdentifier",
+        "value": "REPLACE_WITH_ASSIGNED_TASK_IDENTIFIER"
+      }
+    },
+    {
+      "identifier": "close-task",
+      "impact": "navigation",
+      "locator": {
+        "strategy": "accessibilityIdentifier",
+        "value": "REPLACE_WITH_CLOSE_CONTROL"
+      }
+    },
+    {
+      "identifier": "start-recording",
+      "impact": "startsRecording",
+      "locator": {
+        "strategy": "accessibilityIdentifier",
+        "value": "REPLACE_WITH_START_CONTROL"
+      }
+    },
+    {
+      "identifier": "stop-recording",
+      "impact": "stopsRecording",
+      "locator": {
+        "strategy": "accessibilityIdentifier",
+        "value": "REPLACE_WITH_STOP_CONTROL"
+      }
+    },
+    {
+      "identifier": "discard-recording",
+      "impact": "deletesRecording",
+      "locator": {
+        "strategy": "accessibilityIdentifier",
+        "value": "REPLACE_WITH_DISCARD_CONTROL"
+      }
+    }
+  ],
+  "transitions": [
+    {
+      "desiredState": "running",
+      "screen": "home",
+      "disposition": "action",
+      "actionIdentifier": "open-task"
+    },
+    {
+      "desiredState": "running",
+      "screen": "taskReady",
+      "disposition": "action",
+      "actionIdentifier": "start-recording"
+    },
+    {
+      "desiredState": "running",
+      "screen": "recording",
+      "disposition": "stable"
+    },
+    {
+      "desiredState": "running",
+      "screen": "completionPending",
+      "disposition": "action",
+      "actionIdentifier": "discard-recording"
+    },
+    {
+      "desiredState": "paused",
+      "screen": "home",
+      "disposition": "stable"
+    },
+    {
+      "desiredState": "paused",
+      "screen": "taskReady",
+      "disposition": "action",
+      "actionIdentifier": "close-task"
+    },
+    {
+      "desiredState": "paused",
+      "screen": "recording",
+      "disposition": "action",
+      "actionIdentifier": "stop-recording"
+    },
+    {
+      "desiredState": "paused",
+      "screen": "completionPending",
+      "disposition": "action",
+      "actionIdentifier": "discard-recording"
+    }
+  ],
+  "blockers": []
+}

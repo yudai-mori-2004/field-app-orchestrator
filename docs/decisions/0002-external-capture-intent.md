@@ -10,7 +10,7 @@
 
 ユーザーの入力は、Mac側の`running`または`paused`という目標状態として受け取ります。入力からiPhoneのタップを直接発火しません。
 
-端末ごとに一つだけ存在するDevice Workerが、対象アプリの現在画面と最新の目標状態を照合します。次に許される操作はアプリ固有アダプターが返し、Device Workerが一つずつ直列実行します。
+端末ごとに一つだけ存在するDevice Workerが、対象アプリの現在画面と最新の目標状態を照合します。次に許される操作は、MinuteまたはClaruのコースを読み込んだ共通Course Engineが返し、Device Workerが一つずつ直列実行します。
 
 Minute Dataのdiscard運用では次のように収束します。
 
@@ -39,6 +39,6 @@ Minute Dataのdiscard運用では次のように収束します。
 
 ## 完了操作の境界
 
-discard、保持、提出は外部状態への影響が異なります。Device Workerは各操作の影響を記録できる型だけを持ち、どの完了操作を選ぶかはアプリ固有ポリシーへ閉じ込めます。
+discard、保持、提出は外部状態への影響が異なります。Device Workerは各操作の影響を記録できる型だけを持ち、どの完了操作を選ぶかはアプリ別コースの最後の遷移へ閉じ込めます。
 
-Minute Dataでは、現在は`discardAfterEachChunk`と`requireOperator`だけを実装します。提出を確定する操作は、画面と意味を実機で確認した後にMinute側の最表層ポリシーとして追加します。共通Device Workerの制御規則は変更しません。
+MinuteとClaruの初期コースは、完了画面で`discard-recording`を選びます。操作せず停止したい場合は、その遷移を`needsOperator`へ変えます。提出を確定する操作は、画面と意味を実機で確認した後に該当コースだけへ追加します。共通Device WorkerとCourse Engineの制御規則は変更しません。

@@ -1,8 +1,7 @@
 import FieldAppControllerCore
 import Foundation
-import MinuteAppAdapter
 
-private enum MinuteCLIError: Error, LocalizedError {
+private enum FieldAppCLIError: Error, LocalizedError {
   case usage
   case missingEnvironment(String)
   case invalidEnvironment(String)
@@ -10,7 +9,7 @@ private enum MinuteCLIError: Error, LocalizedError {
   var errorDescription: String? {
     switch self {
     case .usage:
-      return "Usage: minute-app --config <path-to-local-json>"
+      return "Usage: field-app {--course|--validate-course} <path-to-course-json>"
     case .missingEnvironment(let name):
       return "\(name) must be set at runtime."
     case .invalidEnvironment(let detail):
@@ -20,10 +19,35 @@ private enum MinuteCLIError: Error, LocalizedError {
 }
 
 @main
-struct MinuteAppCommand {
-  static func main() async throws {
-    let configPath = try parseConfigPath(CommandLine.arguments)
-    let minuteConfiguration = try loadConfiguration(from: configPath)
+struct FieldAppCommand {
+  static func main() async {
+    do {
+      try await run()
+    } catch {
+      let description: String
+      if let localizedError = error as? LocalizedError,
+        let errorDescription = localizedError.errorDescription
+      {
+        description = errorDescription
+      } else {
+        description = String(describing: error)
+      }
+      FileHandle.standardError.write(Data("field-app: \(description)\n".utf8))
+      exit(EXIT_FAILURE)
+    }
+  }
+
+  private static func run() async throws {
+    let operation = try parseOperation(CommandLine.arguments)
+    let coursePath = operation.path
+    let course = try loadCourse(from: coursePath)
+    try course.validate()
+
+    if operation.isValidationOnly {
+      print("Valid course: \(course.displayName) [\(course.identifier)]")
+      return
+    }
+
     let environment = ProcessInfo.processInfo.environment
     let deviceID = try requiredEnvironment("FAO_DEVICE_ID", from: environment)
     let developmentTeam = try requiredEnvironment(
@@ -32,21 +56,19 @@ struct MinuteAppCommand {
     )
     let serverURL = try appiumURL(from: environment)
     let wdaLocalPort = try port(from: environment)
+    let deviceLabel = environment["FAO_DEVICE_LABEL"] ?? "wda-\(wdaLocalPort)"
     let deviceConfiguration = try AppiumDeviceConfiguration(
       serverURL: serverURL,
       deviceID: deviceID,
       developmentTeam: developmentTeam,
-      bundleIdentifier: MinuteDataAdapter.bundleIdentifier,
+      bundleIdentifier: course.bundleIdentifier,
       wdaLocalPort: wdaLocalPort
     )
 
-    print("Connecting the Minute worker to the configured iPhone...")
+    print("Connecting \(course.displayName) to \(deviceLabel)...")
     let session = try await AppiumSession.start(configuration: deviceConfiguration)
-    let adapter = MinuteDataAdapter(
-      session: session,
-      configuration: minuteConfiguration
-    )
-    let worker = DeviceWorker(deviceID: "configured-device", adapter: adapter)
+    let adapter = try CaptureCourseAdapter(session: session, course: course)
+    let worker = DeviceWorker(deviceID: deviceLabel, adapter: adapter)
     let pollingTask = Task {
       while !Task.isCancelled {
         _ = await worker.reconcileUntilStable()
@@ -54,7 +76,7 @@ struct MinuteAppCommand {
       }
     }
 
-    print("Minute worker is paused. Commands: start, pause, status, retry, quit")
+    print("Worker is paused. Commands: start, pause, status, retry, quit")
     while let command = readLine(strippingNewline: true)?.lowercased() {
       switch command {
       case "start":
@@ -98,18 +120,23 @@ struct MinuteAppCommand {
     await session.close()
   }
 
-  private static func parseConfigPath(_ arguments: [String]) throws -> String {
-    guard arguments.count == 3, arguments[1] == "--config" else {
-      throw MinuteCLIError.usage
+  private static func parseOperation(_ arguments: [String]) throws -> CourseOperation {
+    guard arguments.count == 3 else {
+      throw FieldAppCLIError.usage
     }
-    return arguments[2]
+    switch arguments[1] {
+    case "--course":
+      return CourseOperation(path: arguments[2], isValidationOnly: false)
+    case "--validate-course":
+      return CourseOperation(path: arguments[2], isValidationOnly: true)
+    default:
+      throw FieldAppCLIError.usage
+    }
   }
 
-  private static func loadConfiguration(
-    from path: String
-  ) throws -> MinuteAppConfiguration {
+  private static func loadCourse(from path: String) throws -> CaptureCourseDefinition {
     let data = try Data(contentsOf: URL(fileURLWithPath: path))
-    return try JSONDecoder().decode(MinuteAppConfiguration.self, from: data)
+    return try JSONDecoder().decode(CaptureCourseDefinition.self, from: data)
   }
 
   private static func requiredEnvironment(
@@ -117,7 +144,7 @@ struct MinuteAppCommand {
     from environment: [String: String]
   ) throws -> String {
     guard let value = environment[name], !value.isEmpty else {
-      throw MinuteCLIError.missingEnvironment(name)
+      throw FieldAppCLIError.missingEnvironment(name)
     }
     return value
   }
@@ -125,7 +152,7 @@ struct MinuteAppCommand {
   private static func appiumURL(from environment: [String: String]) throws -> URL {
     let rawValue = environment["FAO_APPIUM_URL"] ?? "http://127.0.0.1:4723/"
     guard let url = URL(string: rawValue), url.scheme == "http" || url.scheme == "https" else {
-      throw MinuteCLIError.invalidEnvironment("FAO_APPIUM_URL must be an HTTP URL.")
+      throw FieldAppCLIError.invalidEnvironment("FAO_APPIUM_URL must be an HTTP URL.")
     }
     return url
   }
@@ -133,7 +160,7 @@ struct MinuteAppCommand {
   private static func port(from environment: [String: String]) throws -> Int {
     let rawValue = environment["FAO_WDA_LOCAL_PORT"] ?? "8100"
     guard let value = Int(rawValue), (1024...64535).contains(value) else {
-      throw MinuteCLIError.invalidEnvironment(
+      throw FieldAppCLIError.invalidEnvironment(
         "FAO_WDA_LOCAL_PORT must be between 1024 and 64535."
       )
     }
@@ -144,4 +171,9 @@ struct MinuteAppCommand {
     "desired=\(snapshot.desiredState.rawValue) phase=\(String(describing: snapshot.phase)) "
       + "screen=\(String(describing: snapshot.observedScreen)) revision=\(snapshot.revision)"
   }
+}
+
+private struct CourseOperation {
+  let path: String
+  let isValidationOnly: Bool
 }

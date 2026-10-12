@@ -1,48 +1,68 @@
 # アプリ別操作定義の形式
 
-アプリ別操作定義は、対象アプリ、画面判定条件、操作対象、状態遷移を記述するJSONです。MinuteとClaruは同じ形式を使い、共通の`field-app`実行器が現在画面と目標状態に応じて操作を選びます。
+アプリ別操作定義は、対象アプリの画面を「状態」として並べ、状態どうしをつなぐタップを「操作」として書いたJSONです。共通の実行処理は、今の状態から目標の状態までの道順をこの地図から計算し、一歩ずつ操作します。手順の並びは書きません。
 
-実装上は`CaptureCourseDefinition`型に対応し、`--course`で実行対象のJSONを指定します。定義例のファイル名は`course.example.json`です。
+実装上は`OperationDefinition`型に対応します。例は`apps/<アプリ名>/definition.example.json`にあります。
 
-## アプリと画面
+## 全体
 
 - `identifier`: ログや操作IDに使う短い名前
-- `displayName`: 運用者へ表示する名前
-- `bundleIdentifier`: Appiumが起動するiOSアプリ
-- `screenProofs`: `home`、`taskReady`、`recording`、`completionPending`を一意に証明する要素
-- `blockers`: ログイン、権限、警告を検出する要素
+- `displayName`: 表示用の名前
+- `bundleIdentifier`: 対象アプリのbundle identifier
+- `afterRecording`: 録画が終わったときに保存するか破棄するか（`save`または`discard`）
+- `states`: 状態の一覧
+- `actions`: 操作の一覧
+- `appTransitions`: アプリが自分で進む移り変わり
+- `goals`: `running`（撮影を続ける）と`paused`（止める）のそれぞれで、たどり着けばよい状態
 
-四つの画面証明はそれぞれ一つ必要です。観測時に0状態または複数状態が一致した場合、実行器は操作しません。
+## 部品の選び方
 
-`blockers`に登録した要素を検出すると、画面判定やタップに進まず、操作を止めて人の確認を待ちます。定義例の`blockers`は空です。対象アプリで確かめたログイン、権限の確認、警告の要素を登録します。
+状態の目印と操作の対象は、次の項目で画面の部品を選びます。
+
+- `name`: アクセシビリティの名前が一致する部品。React Nativeの`testID`はこの名前になり、識別子のない文字は文字そのものが名前になる
+- `namePrefix`: 名前がこの文字で始まる部品
+- `type`: 部品の種類（`Button`、`Other`、`StaticText`など）。同じ名前の文字とボタンを分けるときに使う
+- `labelPrefix`: 読み上げ用の文字列がこの文字で始まる部品
+
+`name`と`namePrefix`はどちらか一方を書きます。
+
+## 状態
+
+- `id`: 状態の名前
+- `present`: すべて画面にあるべき部品
+- `absent`: 一つも画面にあってはならない部品
+
+読み取った画面にちょうど一つの状態が当てはまれば、その状態にいると判断します。ダイアログが開いても下の画面の部品は読み取れてしまうので、下の画面の状態にはダイアログの文言を`absent`として書き、区別します。
 
 ## 操作
 
-`actions`は、操作名、影響、タップ対象を定義します。影響は次のいずれかです。
+- `id`: 操作の名前
+- `from`: この操作を使える状態
+- `tap`: 押す部品
+- `search`: 押す部品が一覧の中にあり、スクロールしないと現れないときの探し方
+- `to`: 押した後に移る状態
+- `impact`: 操作の影響（`navigation`、`startsRecording`、`stopsRecording`、`deletesRecording`、`submitsRecording`）
 
-- `navigation`
-- `startsRecording`
-- `stopsRecording`
-- `deletesRecording`
-- `submitsRecording`
+`afterRecording`が`discard`なら`submitsRecording`の操作を、`save`なら`deletesRecording`の操作を、道順に使いません。保存のボタンと、その後の確認ボタンの両方に`submitsRecording`を付けます。
 
-操作対象が0件または複数件の場合はタップしません。
+`search`は、`container`（スクロールする一覧）、`items`（一覧の項目）、`maxSwipes`（片方向に動かす最大回数）を持ちます。一覧の先頭に戻ってから下へ探し、見つからなければ上へも探します。
 
-## 遷移
+## アプリが自分で進む移り変わり
 
-`transitions`は、`running`または`paused`と現在画面の組に対し、次のいずれかを一つ指定します。
-
-- `action`: `actionIdentifier`の操作を実行する
-- `stable`: 現在状態を維持する
-- `needsOperator`: 操作せず、人の確認を待つ
-
-2目標状態×4画面の8組を一つずつ定義します。完了後に破棄するか、提出するか、人の確認を待つかは`completionPending`の遷移で指定します。新しい完了操作を選ぶ場合は、対応する操作も`actions`へ定義します。
+`appTransitions`には、カウントダウンが終わって録画中になる、録画が上限の長さで終わって完了画面になる、のように、押さなくてもアプリが進む移り変わりを書きます。実行処理は、これを待つかどうかの判断にだけ使います。待つことは押して進むより重く数えるので、止める指示が出ているときは、録画が終わるのを待たずに停止を押します。
 
 ## 検証
 
-`REPLACE_WITH_`で始まる値は未設定として拒否されます。実機へ接続せずに操作定義を検証できます。
+`--validate-definition`で、実機につながずに次を確かめます。
+
+- 状態と操作の名前が重複していない
+- 操作と移り変わりが、定義された状態の間を結んでいる
+- `REPLACE_WITH_`で始まる値が残っていない
+- `afterRecording`の方針のもとで、すべての状態から`running`と`paused`の両方へたどり着ける
+
+最後の項目が通らない定義は、どこかの画面で行き止まりになります。エラーには、たどり着けない状態の名前が出ます。
 
 ```sh
 swift run --package-path mac/controller-core field-app \
-  --validate-course config/local/minute.json
+  --validate-definition config/local/minute.json
 ```

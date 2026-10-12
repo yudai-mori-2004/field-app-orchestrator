@@ -1,17 +1,17 @@
 # Minute Dataの操作定義
 
-Minute Dataを操作するための操作定義の例です。
+Minute Dataを操作するための操作定義です。画面の目印とボタンは、Minute 1.29.0で確かめた値です。
 
-[`course.example.json`](course.example.json)を`config/local/`へコピーし、`REPLACE_WITH_`で始まる値を、インストールされているMinute Dataで調べたアクセシビリティ識別子に置き換えます。`open-task`には、一覧の先頭ではなく、そのiPhoneで撮るタスクを一つだけ示す識別子を入れます。
+撮るタスクは端末ごとに決めます。例をコピーし、`REPLACE_WITH_TASK_TITLE`を、タスク一覧に出ているタスク名に置き換えます。次の例ではFood Prepにしています。
 
 ```sh
 mkdir -p config/local
-cp apps/minute-app/course.example.json config/local/minute.json
+sed 's/REPLACE_WITH_TASK_TITLE/Food Prep/g' apps/minute-app/definition.example.json > config/local/minute.json
 swift run --package-path mac/controller-core field-app \
-  --validate-course config/local/minute.json
+  --validate-definition config/local/minute.json
 ```
 
-定義例は、録画が終わると録画を破棄し、次の録画を始めます。完了後の画面で押すボタンは、操作定義で変えられます。
+例の`afterRecording`は`discard`で、録画が終わるたびに破棄します。保存するときは`save`に変えます。止めたときは、カメラを切ったタスクの説明カードで待ちます。
 
 起動するときは、端末ごとに`FAO_DEVICE_LABEL`と`FAO_WDA_LOCAL_PORT`を変えます。
 
@@ -21,5 +21,5 @@ FAO_DEVELOPMENT_TEAM=<TEAM_ID> \
 FAO_DEVICE_LABEL=minute-01 \
 FAO_WDA_LOCAL_PORT=8100 \
 swift run --package-path mac/controller-core field-app \
-  --course config/local/minute.json
+  --definition config/local/minute.json
 ```

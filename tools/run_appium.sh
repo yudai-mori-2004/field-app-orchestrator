@@ -32,11 +32,8 @@ case "$mode" in
   doctor)
     APPIUM_HOME="$appium_home" "${command_prefix[@]}" npx appium driver doctor xcuitest
     ;;
-  smoke)
-    "${command_prefix[@]}" node tools/appium_mock_smoke.mjs
-    ;;
   *)
-    echo "Usage: $0 {server|doctor|smoke}" >&2
+    echo "Usage: $0 {server|doctor}" >&2
     exit 64
     ;;
 esac

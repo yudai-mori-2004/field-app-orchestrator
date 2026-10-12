@@ -16,18 +16,34 @@ public enum CaptureScreen: Sendable, Equatable {
   case home
   case taskReady
   case recording
+  case completionPending
   case blocked(CaptureBlockReason)
 }
 
-public enum CaptureAction: String, Sendable, Equatable {
-  case openTask
-  case closeTask
-  case startRecording
-  case stopRecording
+public enum CaptureActionImpact: String, Sendable, Equatable {
+  case navigation
+  case startsRecording
+  case stopsRecording
+  case deletesRecording
+  case submitsRecording
+}
+
+public struct CaptureAction: Sendable, Equatable {
+  public let identifier: String
+  public let impact: CaptureActionImpact
+
+  public init(identifier: String, impact: CaptureActionImpact) {
+    self.identifier = identifier
+    self.impact = impact
+  }
 }
 
 public protocol CaptureAppAdapter: Sendable {
   func observe() async throws -> CaptureScreen
+  func nextAction(
+    desiredState: DesiredCaptureState,
+    screen: CaptureScreen
+  ) async throws -> CaptureAction?
   func perform(_ action: CaptureAction) async throws
 }
 
@@ -147,11 +163,16 @@ public actor DeviceWorker {
         case .blocked(let reason):
           phase = .needsAttention(Self.describe(reason))
           return snapshot()
-        case .home, .taskReady, .recording:
+        case .home, .taskReady, .recording, .completionPending:
           break
         }
 
-        guard let action = Self.nextAction(desiredState: desiredState, screen: screen) else {
+        guard
+          let action = try await adapter.nextAction(
+            desiredState: desiredState,
+            screen: screen
+          )
+        else {
           phase = .stable
           return snapshot()
         }
@@ -159,35 +180,20 @@ public actor DeviceWorker {
         phase = .transitioning(action)
         try await adapter.perform(action)
       } catch {
-        phase = .needsAttention(String(describing: error))
+        if let localizedError = error as? LocalizedError,
+          let description = localizedError.errorDescription
+        {
+          phase = .needsAttention(description)
+        } else {
+          phase = .needsAttention(String(describing: error))
+        }
         return snapshot()
       }
     }
 
-    phase = .needsAttention("The app did not reach the requested state within the transition limit.")
+    phase = .needsAttention(
+      "The app did not reach the requested state within the transition limit.")
     return snapshot()
-  }
-
-  public static func nextAction(
-    desiredState: DesiredCaptureState,
-    screen: CaptureScreen
-  ) -> CaptureAction? {
-    switch (desiredState, screen) {
-    case (.running, .home):
-      return .openTask
-    case (.running, .taskReady):
-      return .startRecording
-    case (.running, .recording):
-      return nil
-    case (.paused, .home):
-      return nil
-    case (.paused, .taskReady):
-      return .closeTask
-    case (.paused, .recording):
-      return .stopRecording
-    case (_, .blocked):
-      return nil
-    }
   }
 
   private static func describe(_ reason: CaptureBlockReason) -> String {

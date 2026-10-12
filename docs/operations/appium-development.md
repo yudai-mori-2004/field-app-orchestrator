@@ -1,6 +1,6 @@
 # Appium実機開発
 
-通常運転では、一連の操作を書いた`xcodebuild test`ではなく、Appium XCUITest Driverが実機上のWebDriverAgentを維持します。Mac側のDevice Workerは、このHTTPセッションを通じて画面を観測し、必要な操作を一回ずつ送ります。
+通常運転では、Appium XCUITest Driverが実機上のWebDriverAgentを維持します。一台分のDevice Workerは、このHTTPセッションから画面を観測し、アプリ固有アダプターが許した操作を一回ずつ送ります。
 
 ## 初回セットアップ
 
@@ -13,27 +13,34 @@ npm run doctor:appium
 
 `mise`がある場合は`.mise.toml`のNode.jsを自動的に使用します。Appiumのドライバー本体はリポジトリ内の`.appium/`へインストールされ、Gitには含まれません。
 
+iPhoneでは、Macとの信頼、Developer Mode、対象アプリへのログイン、必要な権限許可を初回に済ませます。WebDriverAgentの署名に使うTeamへ端末を登録します。
+
 ## サーバー起動
 
 ```sh
 npm run appium
 ```
 
-別のターミナルから、提出を行わないモックだけを対象に実機スモークテストを実行します。
+Appiumサーバーは共通で一つ起動できます。端末ごとの`minute-app`プロセスが別セッションを作ります。各端末には異なる`FAO_WDA_LOCAL_PORT`を割り当て、その1000番後に使うMJPEGポートも重複させません。
 
-```sh
-FAO_DEVICE_ID=<IPHONE_UDID> \
-FAO_DEVELOPMENT_TEAM=<TEAM_ID> \
-FAO_WDA_LOCAL_PORT=8100 \
-npm run smoke:appium
-```
+端末UDIDと署名Team IDは環境変数で実行時だけ渡し、設定ファイルやシェル履歴を公開リポジトリへ入れません。アプリ固有の起動例は[`apps/minute-app/README.md`](../../apps/minute-app/README.md)にあります。
 
-端末IDと署名チームは実行時にだけ渡します。並列実行では、端末ごとに異なる`FAO_WDA_LOCAL_PORT`を割り当てます。MJPEG転送にはその値へ1000を加えたポートを使うため、指定できる範囲は1024から64535です。
+## 長時間セッション
 
-スモークテストは、WebDriverAgentセッションを作成し、アクセシビリティ識別子でモックの開始と停止を操作してからセッションを閉じます。`useNewWDA=false`なので、次のセッションは実機上の既存WebDriverAgentを再利用できます。
+実機capabilityは次の方針です。
 
-## 現在の境界
+- `useNewWDA=false`で既存WebDriverAgentを再利用する。
+- `noReset=true`でログイン状態とアプリデータを保つ。
+- `shouldTerminateApp=false`でセッション終了時に対象アプリを強制終了しない。
+- WDA起動と接続には明示的なタイムアウトと再試行回数を持たせる。
+- 一台ごとにDerivedData、WDAポート、MJPEGポートを分ける。
 
-このスモークテストは、署名、USB転送、WebDriverAgent、HTTP操作が成立することだけを確認します。8時間運転には、Device Workerとの接続、ヘルスチェック、セッション再作成、端末切断の分類、端末別ポート割り当て、構造化ログがさらに必要です。
+観測用の要素検索がセッション切断で失敗した場合は、古いセッションを破棄し、新しいセッションを一度だけ作って再観測します。タップの応答が失われた場合は、端末側で操作が成立したか判定できないため自動再送せず、その端末を`needsAttention`へ移します。オペレーターが画面を確認して`retry`すると、新しい観測から再開します。
 
-Minute Dataをこのコマンドの対象にしません。実アプリの完全な操作は、[`0003-third-party-binary-validation.md`](../decisions/0003-third-party-binary-validation.md)で定めた公式検証環境だけで行います。
+二台同時運転と8時間試験では、USB/Wi-Fi切断、WDA停止、対象アプリ停止を個別に発生させ、この境界で重複操作せず復旧できることを確認します。
+
+## 実アプリの安全境界
+
+アクセシビリティ識別子はアプリ版ごとにローカル設定で確定します。対象を一意に確認できなければタップしません。実Minuteでの録画・discardは外部状態を変えるため、対象アカウントとタスクを確定した実機確認として別に実施します。
+
+discardは完了画面での操作であり、それ以前のアップロードを取り消す保証ではありません。提出を確定する操作はまだ本番アダプターに実装していません。

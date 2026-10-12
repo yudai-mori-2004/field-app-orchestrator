@@ -1,0 +1,38 @@
+{
+  "selectors": {
+    "taskCard": {
+      "strategy": "accessibilityIdentifier",
+      "value": "REPLACE_WITH_ASSIGNED_TASK_IDENTIFIER"
+    },
+    "taskReadyProof": {
+      "strategy": "accessibilityIdentifier",
+      "value": "REPLACE_WITH_TASK_READY_PROOF"
+    },
+    "recordingProof": {
+      "strategy": "accessibilityIdentifier",
+      "value": "REPLACE_WITH_RECORDING_PROOF"
+    },
+    "completionPendingProof": {
+      "strategy": "accessibilityIdentifier",
+      "value": "REPLACE_WITH_COMPLETION_PROOF"
+    },
+    "startRecording": {
+      "strategy": "accessibilityIdentifier",
+      "value": "REPLACE_WITH_START_CONTROL"
+    },
+    "stopRecording": {
+      "strategy": "accessibilityIdentifier",
+      "value": "REPLACE_WITH_STOP_CONTROL"
+    },
+    "discardRecording": {
+      "strategy": "accessibilityIdentifier",
+      "value": "REPLACE_WITH_DISCARD_CONTROL"
+    },
+    "closeTask": {
+      "strategy": "accessibilityIdentifier",
+      "value": "REPLACE_WITH_CLOSE_CONTROL"
+    },
+    "blockers": []
+  },
+  "completionPolicy": "discardAfterEachChunk"
+}

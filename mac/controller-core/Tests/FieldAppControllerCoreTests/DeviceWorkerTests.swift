@@ -1,4 +1,5 @@
 import XCTest
+
 @testable import FieldAppControllerCore
 
 private enum AdapterError: Error {
@@ -6,6 +7,27 @@ private enum AdapterError: Error {
 }
 
 private actor InMemoryCaptureAdapter: CaptureAppAdapter {
+  fileprivate static let openTask = CaptureAction(
+    identifier: "test.open-task",
+    impact: .navigation
+  )
+  fileprivate static let closeTask = CaptureAction(
+    identifier: "test.close-task",
+    impact: .navigation
+  )
+  fileprivate static let startRecording = CaptureAction(
+    identifier: "test.start-recording",
+    impact: .startsRecording
+  )
+  fileprivate static let stopRecording = CaptureAction(
+    identifier: "test.stop-recording",
+    impact: .stopsRecording
+  )
+  fileprivate static let discardRecording = CaptureAction(
+    identifier: "test.discard-recording",
+    impact: .deletesRecording
+  )
+
   private var screen: CaptureScreen
   private var actions: [CaptureAction] = []
   private var inFlightActions = 0
@@ -24,6 +46,30 @@ private actor InMemoryCaptureAdapter: CaptureAppAdapter {
     screen
   }
 
+  func nextAction(
+    desiredState: DesiredCaptureState,
+    screen: CaptureScreen
+  ) async throws -> CaptureAction? {
+    switch (desiredState, screen) {
+    case (.running, .home):
+      return Self.openTask
+    case (.running, .taskReady):
+      return Self.startRecording
+    case (.running, .recording):
+      return nil
+    case (.paused, .home):
+      return nil
+    case (.paused, .taskReady):
+      return Self.closeTask
+    case (.paused, .recording):
+      return Self.stopRecording
+    case (_, .completionPending):
+      return Self.discardRecording
+    case (_, .blocked):
+      return nil
+    }
+  }
+
   func perform(_ action: CaptureAction) async throws {
     inFlightActions += 1
     highestConcurrentActionCount = max(highestConcurrentActionCount, inFlightActions)
@@ -33,14 +79,16 @@ private actor InMemoryCaptureAdapter: CaptureAppAdapter {
       try await Task.sleep(nanoseconds: actionDelayNanoseconds)
     }
 
-    switch (action, screen) {
-    case (.openTask, .home):
+    switch screen {
+    case .home where action == Self.openTask:
       screen = .taskReady
-    case (.closeTask, .taskReady):
+    case .taskReady where action == Self.closeTask:
       screen = .home
-    case (.startRecording, .taskReady):
+    case .taskReady where action == Self.startRecording:
       screen = .recording
-    case (.stopRecording, .recording):
+    case .recording where action == Self.stopRecording:
+      screen = .completionPending
+    case .completionPending where action == Self.discardRecording:
       screen = .home
     default:
       throw AdapterError.invalidTransition(action, screen)
@@ -50,7 +98,7 @@ private actor InMemoryCaptureAdapter: CaptureAppAdapter {
   }
 
   func simulateNaturalChunkEnd() {
-    screen = .home
+    screen = .completionPending
   }
 
   func setScreen(_ newScreen: CaptureScreen) {
@@ -81,7 +129,10 @@ final class DeviceWorkerTests: XCTestCase {
     let firstScreen = await adapter.currentScreen()
     let firstActions = await adapter.actionLog()
     XCTAssertEqual(firstScreen, .recording)
-    XCTAssertEqual(firstActions, [.openTask, .startRecording])
+    XCTAssertEqual(
+      firstActions,
+      [InMemoryCaptureAdapter.openTask, InMemoryCaptureAdapter.startRecording]
+    )
 
     await adapter.simulateNaturalChunkEnd()
     _ = await worker.reconcileUntilStable()
@@ -89,7 +140,16 @@ final class DeviceWorkerTests: XCTestCase {
     let secondScreen = await adapter.currentScreen()
     let secondActions = await adapter.actionLog()
     XCTAssertEqual(secondScreen, .recording)
-    XCTAssertEqual(secondActions, [.openTask, .startRecording, .openTask, .startRecording])
+    XCTAssertEqual(
+      secondActions,
+      [
+        InMemoryCaptureAdapter.openTask,
+        InMemoryCaptureAdapter.startRecording,
+        InMemoryCaptureAdapter.discardRecording,
+        InMemoryCaptureAdapter.openTask,
+        InMemoryCaptureAdapter.startRecording,
+      ]
+    )
   }
 
   func testPauseAndResumeCanBeRequestedAtAnyTime() async {
@@ -109,7 +169,17 @@ final class DeviceWorkerTests: XCTestCase {
     let resumedScreen = await adapter.currentScreen()
     let actions = await adapter.actionLog()
     XCTAssertEqual(resumedScreen, .recording)
-    XCTAssertEqual(actions, [.openTask, .startRecording, .stopRecording, .openTask, .startRecording])
+    XCTAssertEqual(
+      actions,
+      [
+        InMemoryCaptureAdapter.openTask,
+        InMemoryCaptureAdapter.startRecording,
+        InMemoryCaptureAdapter.stopRecording,
+        InMemoryCaptureAdapter.discardRecording,
+        InMemoryCaptureAdapter.openTask,
+        InMemoryCaptureAdapter.startRecording,
+      ]
+    )
   }
 
   func testBlockedScreenFailsClosedWithoutTapping() async {
@@ -159,7 +229,10 @@ final class DeviceWorkerTests: XCTestCase {
     let screen = await adapter.currentScreen()
     let actions = await adapter.actionLog()
     XCTAssertEqual(screen, .home)
-    XCTAssertEqual(actions, [.openTask, .closeTask])
+    XCTAssertEqual(
+      actions,
+      [InMemoryCaptureAdapter.openTask, InMemoryCaptureAdapter.closeTask]
+    )
   }
 
   func testLatestIntentWinsBeforeAnyActionIsSent() async {

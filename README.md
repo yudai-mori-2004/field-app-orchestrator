@@ -1,62 +1,71 @@
 # Field App Orchestrator
 
-Field App Orchestratorは、現場のMacから複数のiPhoneを個別に監視し、各販売先アプリで繰り返し必要になる操作を補助するためのシステムです。
+Field App Orchestratorは、現場のMacから複数のiPhoneを個別に監視し、販売先アプリで繰り返し必要になる操作を補助するシステムです。初回設定後の通常稼働では、ヘッドマウントしたiPhoneを装着者が触らず、Mac側から開始・一時停止できる状態を目指します。
 
-目指す状態は、初回設定を済ませた端末について、通常稼働中はヘッドマウントしたiPhoneを人が触らずに運用できることです。画面が想定と一致しない場合は推測で操作せず、その端末だけを停止して担当者へ知らせます。
+一台につき一つのDevice Workerだけが操作権を持ちます。Mac UI、CLI、物理入力などはiPhoneへ直接タップを送らず、`running`または`paused`という目標状態を更新します。ワーカーは画面を再観測して既知の操作だけを直列実行し、対象要素を一意に確認できない場合や未知の画面では、その端末だけを停止します。
 
-## 設計境界
-
-- オーケストレーターは、端末の検出、接続状態、並列実行、再試行、停止、監査ログを管理します。
-- アプリ固有アダプターは、対象アプリのbundle identifier、画面状態、操作対象、正常遷移だけを知ります。
-- 通常運転は、承認済みの決定論的な状態遷移で実行します。
-- AIエージェントは、新しいアプリの調査や失敗診断、アダプター修正の支援に使えますが、本番中に未知の画面を推測して操作しません。
-- 対象アプリの認証情報、利用者データ、端末固有設定はリポジトリへ保存しません。
-
-## 現在の状態
-
-2026-10-13時点で、USB接続した2台のiPhoneへ安全なモックをインストールし、端末ごとに独立したXCUITestプロセスから、開始・停止・再開・停止を同時実行できることを確認しています。モックは録画、保存、通信、提出を行いません。
-
-さらに1台では、Appium XCUITest Driverが実機上のWebDriverAgentを起動し、HTTP経由で同じ開始・停止操作を実行できることと、次のセッションでWebDriverAgentを再利用できることを確認しています。セットアップ手順は[`appium-development.md`](docs/operations/appium-development.md)にあります。
-
-Minute Dataについて確認している範囲は次のとおりです。
-
-- Minute Dataの起動
-- アクセシビリティツリーとスクリーンショットの取得
-- 座標ではなく識別子によるfeatured taskの選択
-- タスク詳細画面への遷移
-- 継続アニメーションによる約60秒の待機を回避
-
-Minute Dataでの実際の録画開始、Wi-Fi接続、30分後の再開、切断後の復旧はまだ検証していません。複数台並列は安全なモックでのみ検証済みです。
-
-## リポジトリ構成
+## 実装単位
 
 ```text
-docs/
-  architecture.md                 システム境界と通常フロー
-  decisions/                      重要な設計判断
-ios/
-  mock-app/                       提出・録画を行わない実機用モック
-  runner/                         XCUITestランナーとアプリ固有テスト
+apps/
+  minute-app/                    Minute Data本番アダプターとCLI
 mac/
-  controller-core/                外部の開始・一時停止を直列化する状態機械
+  controller-core/               端末ワーカーとAppium HTTP接続
+docs/                            通常フロー、運用、設計判断
+tools/                           Appiumセットアップと公開前検査
 ```
 
-Mac側コントローラーの状態機械を追加しています。配布用UIは、実機で通常フローと復旧条件を確認してから追加します。現段階ではUIフレームワークやプラグイン機構を固定しません。
+新しい販売先アプリは`apps/<app-name>/`へ独立して追加します。bundle identifier、画面状態、操作対象、状態遷移は各アプリ側に置き、端末接続、操作の直列化、開始・一時停止、監査可能な操作種別は共通層に置きます。仕様がないアプリの空実装や汎用DSLは作りません。
 
-第三者アプリのApp Storeバイナリは改変せず、公式の検証ビルドまたはステージング環境と、画面状態を再生するローカルシミュレーターを併用します。理由と検証境界は[`0003-third-party-binary-validation.md`](docs/decisions/0003-third-party-binary-validation.md)に記録しています。
+## Minute Data
 
-## 次の検証順序
+[`apps/minute-app`](apps/minute-app/README.md)には、Minute Dataの次の経路があります。
 
-1. AppiumセッションをMac側の各Device Workerへ接続する。
-2. ヘルスチェック、タイムアウト、セッション再作成を実装する。
-3. 画面状態リプレイと障害注入で8時間の連続運転を検証する。
-4. 同じiPhoneをWi-Fi経由で操作し、切断と端末再起動からの復旧を確認する。
-5. 提出を発生させない公式検証環境で、Minute Dataの終了・再開画面を確認する。
+```text
+running
+  → 割り当て済みタスクを開く
+  → 録画を開始する
+  → 完了画面でdiscardする
+  → 次のチャンクを開始する
 
-安全な反復テストには[`ios/mock-app`](ios/mock-app/README.md)を使います。XCUITestランナーの使い方は[`ios/runner/README.md`](ios/runner/README.md)を参照してください。
+paused
+  → 録画中なら停止する
+  → 完了画面でdiscardする
+  → ホームで待機する
+```
+
+完了時の挙動は`MinuteCompletionPolicy`に閉じ込めています。現時点では`discardAfterEachChunk`と、操作せず停止する`requireOperator`だけを実装し、提出を確定する操作は実装していません。
+
+Minute Dataは録画中または完了前からアップロードする可能性があります。したがって、最後にdiscardすることは「データがサーバーへ一度も送られない」ことの保証にはなりません。実アプリでの確認は対象タスクと影響を確定してから行います。
+
+## 開発と実行
+
+Node.js、Appium、XCUITest Driverの版は固定しています。
+
+```sh
+npm run setup:appium
+npm run doctor:appium
+npm run appium
+```
+
+Minuteの端末別起動と設定方法は[`apps/minute-app/README.md`](apps/minute-app/README.md)を参照してください。
+
+```sh
+swift test --package-path mac/controller-core
+swift test --package-path apps/minute-app
+```
+
+## 現在地
+
+- USB接続した実機で、AppiumからWebDriverAgentを起動・再利用できることは確認済みです。
+- 複数端末の操作を一台ずつ独立したワーカーへ分ける境界があります。
+- 観測中のセッション切断は一度だけ再接続し、結果不明のタップは自動再送しません。
+- Minuteの完了後discard、自動再開、任意停止は、本番アダプターを通る決定論的テストで確認しています。
+- 実Minuteの録画・discard操作はまだ実行していません。画面識別子を現在版で確定した後に実機確認します。
+- Wi-Fi接続、切断復旧、二台同時運転、8時間連続運転は次の実機検証です。
 
 ## 公開リポジトリとしての扱い
 
-このリポジトリは公開を前提とします。実験、診断出力、スクリーンショット、録画、ローカル設定、署名資料は`.gitignore`で除外しています。追跡ファイルは[`tools/check_public_tree.py`](tools/check_public_tree.py)で検査し、pushとpull requestでも同じ検査を実行します。
+端末ID、署名情報、対象タスク、診断出力、スクリーンショット、録画、ローカル設定はコミットしません。追跡ファイルは[`tools/check_public_tree.py`](tools/check_public_tree.py)で検査し、pushとpull requestでも同じ検査を実行します。
 
-公開されていることは、コードの利用許諾を意味しません。ライセンスは未決定です。
+公開されていることはコードの利用許諾を意味しません。ライセンスは未決定です。

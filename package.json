@@ -8,8 +8,7 @@
   "scripts": {
     "setup:appium": "bash tools/setup_appium.sh",
     "appium": "bash tools/run_appium.sh server",
-    "doctor:appium": "bash tools/run_appium.sh doctor",
-    "smoke:appium": "bash tools/run_appium.sh smoke"
+    "doctor:appium": "bash tools/run_appium.sh doctor"
   },
   "devDependencies": {
     "appium": "3.8.0"

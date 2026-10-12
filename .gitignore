@@ -1,0 +1,41 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+
+# Apple and Xcode
+DerivedData/
+build/
+*.xcresult
+*.xctestrun
+*.xcarchive
+*.ipa
+*.mobileprovision
+*.provisionprofile
+*.cer
+*.p12
+*.pem
+*.key
+*.p8
+xcuserdata/
+*.xcuserstate
+
+# Runtime output
+artifacts/
+logs/
+screenshots/
+*.log
+
+# Local operator and device configuration
+config/local/
+*.local.json
+*.local.yml
+*.local.yaml
+
+# Unreviewed research and experiments stay local
+experiments/
+scratch/
+tmp/
+.private/

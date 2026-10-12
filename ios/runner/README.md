@@ -38,6 +38,10 @@ xcodebuild \
 
 `testInspectFirstFeaturedTask`は先頭のfeatured taskを開いて詳細画面を記録しますが、`start task`は押しません。
 
+## 提出を伴わない反復テスト
+
+`MockTaskAppUITests`は[`../mock-app`](../mock-app/README.md)を対象にします。録画やネットワーク通信を行わず、3秒後に30分終了相当の画面遷移を発生させます。実アプリの`start task`を押す検証はここへ追加しません。
+
 ## 既知の制約
 
 Minute Dataのfeatured carouselはCore Animationを継続するため、通常のXCTest操作ではアイドル待ちに約60秒かかりました。現在のテストはXCTestの非公開ランナーフックを使い、操作前後のquiescence待ちを外しています。このフックが利用できないXcodeでは通常の操作へフォールバックします。

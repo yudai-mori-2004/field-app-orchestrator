@@ -31,6 +31,7 @@ docs/
   architecture.md                 システム境界と通常フロー
   decisions/                      重要な設計判断
 ios/
+  mock-app/                       提出・録画を行わない実機用モック
   runner/                         XCUITestランナーとアプリ固有テスト
 ```
 
@@ -44,7 +45,7 @@ Mac側オーケストレーターと配布用アプリは、実機で通常フ�
 4. 2台をUDID別のプロセスで並列実行する。
 5. Wi-Fi切断、アプリ停止、端末再起動を個別に検証する。
 
-XCUITestランナーの使い方は[`ios/runner/README.md`](ios/runner/README.md)を参照してください。
+安全な反復テストには[`ios/mock-app`](ios/mock-app/README.md)を使います。XCUITestランナーの使い方は[`ios/runner/README.md`](ios/runner/README.md)を参照してください。
 
 ## 公開リポジトリとしての扱い
 

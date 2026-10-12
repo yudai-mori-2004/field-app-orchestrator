@@ -6,6 +6,8 @@ __pycache__/
 *.py[cod]
 .build/
 graphify-out/
+node_modules/
+.appium/
 
 # Apple and Xcode
 DerivedData/

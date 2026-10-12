@@ -16,6 +16,8 @@ Field App Orchestratorは、現場のMacから複数のiPhoneを個別に監視�
 
 2026-10-13時点で、USB接続した2台のiPhoneへ安全なモックをインストールし、端末ごとに独立したXCUITestプロセスから、開始・停止・再開・停止を同時実行できることを確認しています。モックは録画、保存、通信、提出を行いません。
 
+さらに1台では、Appium XCUITest Driverが実機上のWebDriverAgentを起動し、HTTP経由で同じ開始・停止操作を実行できることと、次のセッションでWebDriverAgentを再利用できることを確認しています。セットアップ手順は[`appium-development.md`](docs/operations/appium-development.md)にあります。
+
 Minute Dataについて確認している範囲は次のとおりです。
 
 - Minute Dataの起動
@@ -41,13 +43,15 @@ mac/
 
 Mac側コントローラーの状態機械を追加しています。配布用UIは、実機で通常フローと復旧条件を確認してから追加します。現段階ではUIフレームワークやプラグイン機構を固定しません。
 
+第三者アプリのApp Storeバイナリは改変せず、公式の検証ビルドまたはステージング環境と、画面状態を再生するローカルシミュレーターを併用します。理由と検証境界は[`0003-third-party-binary-validation.md`](docs/decisions/0003-third-party-binary-validation.md)に記録しています。
+
 ## 次の検証順序
 
-1. WebDriverAgentの長時間セッションをモックへ接続する。
-2. Mac側の`running`と`paused`入力を各端末ワーカーへ接続する。
-3. 同じiPhoneをWi-Fi経由で操作する。
-4. Wi-Fi切断、アプリ停止、端末再起動を個別に検証する。
-5. 提出を発生させない許可済み条件を整えてから、Minute Dataの終了・再開画面を確認する。
+1. AppiumセッションをMac側の各Device Workerへ接続する。
+2. ヘルスチェック、タイムアウト、セッション再作成を実装する。
+3. 画面状態リプレイと障害注入で8時間の連続運転を検証する。
+4. 同じiPhoneをWi-Fi経由で操作し、切断と端末再起動からの復旧を確認する。
+5. 提出を発生させない公式検証環境で、Minute Dataの終了・再開画面を確認する。
 
 安全な反復テストには[`ios/mock-app`](ios/mock-app/README.md)を使います。XCUITestランナーの使い方は[`ios/runner/README.md`](ios/runner/README.md)を参照してください。
 

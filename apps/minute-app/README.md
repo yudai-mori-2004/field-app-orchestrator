@@ -13,13 +13,15 @@ swift run --package-path mac/controller-core field-app \
 
 例の`afterRecording`は`discard`で、録画が終わるたびに破棄します。保存するときは`save`に変えます。止めたときは、カメラを切ったタスクの説明カードで待ちます。
 
-起動するときは、端末ごとに`FAO_DEVICE_LABEL`と`FAO_WDA_LOCAL_PORT`を変えます。
+起動するときは、端末ごとに`FAO_DEVICE_LABEL`、`FAO_WDA_LOCAL_PORT`、`FAO_CONTROL_PORT`を変えます。`FAO_CONTROL_PORT`と`FAO_CONTROL_TOKEN`は、背面タップで止める・再開するときに使います。
 
 ```sh
 FAO_DEVICE_ID=<IPHONE_UDID> \
 FAO_DEVELOPMENT_TEAM=<TEAM_ID> \
 FAO_DEVICE_LABEL=minute-01 \
 FAO_WDA_LOCAL_PORT=8100 \
+FAO_CONTROL_PORT=8400 \
+FAO_CONTROL_TOKEN=<16文字以上のトークン> \
 swift run --package-path mac/controller-core field-app \
   --definition config/local/minute.json
 ```

@@ -83,6 +83,8 @@ public actor DeviceWorker {
   private var phase: DeviceWorkerPhase = .idle
   private var revision: UInt64 = 0
   private var isReconciling = false
+  private var reconciliationWaiters: [CheckedContinuation<Void, Never>] = []
+  private var isStopping = false
   private var shouldStop = false
 
   public init(deviceID: String, adapter: any CaptureAppAdapter) {
@@ -91,19 +93,39 @@ public actor DeviceWorker {
   }
 
   public func setDesiredState(_ newState: DesiredCaptureState) {
-    guard !shouldStop else { return }
+    guard !isStopping, !shouldStop else { return }
     desiredState = newState
     revision &+= 1
   }
 
-  public func stopWorker() {
-    shouldStop = true
+  /// Leaves the device paused before the worker stops. An action already sent
+  /// is allowed to finish, because a tap cannot be taken back. A worker that
+  /// needs attention is stopped without tapping.
+  public func pauseAndStop(maxTransitions: Int = 4) async -> DeviceWorkerSnapshot {
+    guard !isStopping, !shouldStop else { return snapshot() }
+    isStopping = true
+    desiredState = .paused
     revision &+= 1
+
+    while isReconciling {
+      await withCheckedContinuation { reconciliationWaiters.append($0) }
+    }
+
+    let finalSnapshot: DeviceWorkerSnapshot
+    if case .needsAttention = phase {
+      finalSnapshot = snapshot()
+    } else {
+      finalSnapshot = await reconcileExclusively(maxTransitions: maxTransitions)
+    }
+
+    shouldStop = true
     phase = .stopped
+    revision &+= 1
+    return finalSnapshot
   }
 
   public func acknowledgeAndRetry() {
-    guard case .needsAttention = phase, !shouldStop else { return }
+    guard case .needsAttention = phase, !isStopping, !shouldStop else { return }
     phase = .idle
     revision &+= 1
   }
@@ -119,37 +141,33 @@ public actor DeviceWorker {
 
   @discardableResult
   public func reconcileUntilStable(maxTransitions: Int = 4) async -> DeviceWorkerSnapshot {
-    guard !isReconciling else { return snapshot() }
-    guard !shouldStop else { return snapshot() }
+    guard !isReconciling, !isStopping, !shouldStop else { return snapshot() }
     if case .needsAttention = phase {
       return snapshot()
     }
 
+    return await reconcileExclusively(maxTransitions: maxTransitions)
+  }
+
+  private func reconcileExclusively(maxTransitions: Int) async -> DeviceWorkerSnapshot {
     isReconciling = true
-    defer { isReconciling = false }
+    defer {
+      isReconciling = false
+      let waiters = reconciliationWaiters
+      reconciliationWaiters.removeAll()
+      for waiter in waiters {
+        waiter.resume()
+      }
+    }
     return await reconcile(maxTransitions: maxTransitions)
   }
 
-  public func run(pollIntervalMilliseconds: UInt64 = 500) async {
-    guard !isReconciling, !shouldStop else { return }
-
-    while !Task.isCancelled, !shouldStop {
-      _ = await reconcileUntilStable()
-
-      if case .needsAttention = phase {
-        return
-      }
-
-      do {
-        try await Task.sleep(nanoseconds: pollIntervalMilliseconds * 1_000_000)
-      } catch {
-        return
-      }
-    }
-  }
-
+  /// The transition limit applies to each requested state, so a pause that
+  /// arrives late in a restart still gets the full limit to settle.
   private func reconcile(maxTransitions: Int) async -> DeviceWorkerSnapshot {
-    for _ in 0..<maxTransitions {
+    var target = desiredState
+    var observationsTowardTarget = 0
+    while observationsTowardTarget < maxTransitions {
       guard !shouldStop else {
         phase = .stopped
         return snapshot()
@@ -167,9 +185,15 @@ public actor DeviceWorker {
           break
         }
 
+        if desiredState != target {
+          target = desiredState
+          observationsTowardTarget = 0
+        }
+        observationsTowardTarget += 1
+
         guard
           let action = try await adapter.nextAction(
-            desiredState: desiredState,
+            desiredState: target,
             screen: screen
           )
         else {

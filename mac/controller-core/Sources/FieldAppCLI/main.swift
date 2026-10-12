@@ -5,6 +5,7 @@ private enum FieldAppCLIError: Error, LocalizedError {
   case usage
   case missingEnvironment(String)
   case invalidEnvironment(String)
+  case notPausedAtExit(String)
 
   var errorDescription: String? {
     switch self {
@@ -14,6 +15,8 @@ private enum FieldAppCLIError: Error, LocalizedError {
       return "\(name) must be set at runtime."
     case .invalidEnvironment(let detail):
       return detail
+    case .notPausedAtExit(let detail):
+      return "Stopped without confirming that the device is paused. Check the device screen. \(detail)"
     }
   }
 }
@@ -94,7 +97,7 @@ struct FieldAppCommand {
         let snapshot = await worker.reconcileUntilStable()
         print(snapshotDescription(snapshot))
       case "quit":
-        await shutDown(worker: worker, pollingTask: pollingTask, session: session)
+        try await shutDown(worker: worker, pollingTask: pollingTask, session: session)
         return
       case "":
         continue
@@ -103,21 +106,24 @@ struct FieldAppCommand {
       }
     }
 
-    await shutDown(worker: worker, pollingTask: pollingTask, session: session)
+    try await shutDown(worker: worker, pollingTask: pollingTask, session: session)
   }
 
   private static func shutDown(
     worker: DeviceWorker,
     pollingTask: Task<Void, Never>,
     session: AppiumSession
-  ) async {
-    await worker.setDesiredState(.paused)
-    let finalSnapshot = await worker.reconcileUntilStable()
-    print("Stopping: \(snapshotDescription(finalSnapshot))")
-    await worker.stopWorker()
+  ) async throws {
+    // Cancelling polling first would cut off a tap that is already on its way.
+    let finalSnapshot = await worker.pauseAndStop()
     pollingTask.cancel()
     _ = await pollingTask.value
     await session.close()
+
+    guard finalSnapshot.phase == .stable else {
+      throw FieldAppCLIError.notPausedAtExit(snapshotDescription(finalSnapshot))
+    }
+    print("Paused and stopped: \(snapshotDescription(finalSnapshot))")
   }
 
   private static func parseOperation(_ arguments: [String]) throws -> CourseOperation {

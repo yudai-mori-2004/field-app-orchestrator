@@ -22,7 +22,7 @@ flowchart LR
 
 ### 操作受付と端末管理
 
-現在は共通の`field-app` CLIを一台につき一プロセス起動し、`--course`で操作定義のJSONを指定します。CLIは端末への接続とワーカーの起動を行い、開始・一時停止・状態確認・再試行を受け付けます。
+現在は共通の`field-app` CLIを一台につき一プロセス起動し、`--course`で操作定義のJSONを指定します。CLIは端末への接続とワーカーの起動を行い、開始・一時停止・状態確認・再試行・終了を受け付けます。
 
 複数端末をまとめるControllerは、次の責務を持つ上位の管理機能として追加します。
 
@@ -38,6 +38,8 @@ flowchart LR
 - 最新の目標状態だけを保持する
 - 未知画面や操作の失敗を`needsAttention`へ移す
 - ユーザー入力と定期観測が重なっても二つの操作を同時送信しない
+- 遷移の上限は目標状態ごとに数え、途中で目標が変わったら数え直す
+- 終了時は目標を`paused`にし、送信済みの操作が終わるのを待ってから一時停止まで進めて止める。`needsAttention`ならタップせずに止める
 
 ### Appium session
 
@@ -71,20 +73,20 @@ flowchart LR
 
 MinuteとClaruは同じ定義形式を使います。現在の形式は四つの画面状態とタップ操作を扱います。アプリ追加時もDevice WorkerとAppium接続を共用し、実際の操作手順がこの形式で表せない場合に、必要な処理と定義項目を拡張します。
 
-## 操作定義例の状態遷移
+## 画面の流れの例
+
+`apps/`の操作定義例は、次の流れを想定しています。
 
 ```text
 home ── open-task ──> taskReady
 taskReady ── start-recording ──> recording
 recording ── 自然終了または stop-recording ──> completionPending
-completionPending ── discard-recording ──> home
+completionPending ── 完了後の操作 ──> home
 ```
 
-目標が`running`なら、discard後の`home`から次のチャンクを開始します。目標が`paused`なら、録画中は停止してdiscardし、`home`で待機します。操作定義の該当する遷移を`needsOperator`へ変えれば、その画面ではタップせず停止します。
+目標が`running`なら、`home`に戻るたびに次のチャンクを開始します。目標が`paused`なら、`home`で待機します。完了後の操作は操作定義で選びます。提出や破棄の操作を割り当てることも、`needsOperator`にしてタップせず人の確認を待つこともできます。
 
-上図は期待する画面の流れです。JSONの`transitions`には現在画面と目標状態に対する次の操作を記述し、操作後の画面は再観測で判定します。
-
-実際の状態は画面要素で確認し、時間だけから録画状態を推定しません。画面証明や操作対象が0件または複数件の場合も操作しません。
+JSONの`transitions`には、現在画面と目標状態の組ごとに次の操作だけを書きます。操作後の画面は上図から推測せず、再観測で判定します。時間だけから録画状態を推定することもしません。画面証明や操作対象が0件または複数件の場合は操作しません。
 
 ## エージェントの位置づけ
 
@@ -94,4 +96,4 @@ AIエージェントは制御ループの外側に置きます。アプリ更新
 
 開発中はSwift Packageの`field-app`実行ファイルを使用します。MinuteとClaruの実画面、二台同時運転、Wi-Fi切断復旧、8時間連続運転を確認した後、同じ実行器を署名・公証したMacアプリへ包みます。
 
-MacアプリのDeveloper ID署名と、iPhone上のWebDriverAgentに必要なApple Development署名は別に管理します。端末UDID、Team ID、対象タスク、画面資料はリポジトリへ保存しません。
+MacアプリのDeveloper ID署名と、iPhone上のWebDriverAgentに必要なApple Development署名は別に管理します。端末UDIDとTeam IDは実行時の環境変数で、対象タスクはローカルの操作定義で与えます。

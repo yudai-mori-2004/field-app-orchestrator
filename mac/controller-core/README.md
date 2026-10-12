@@ -1,21 +1,17 @@
 # Controller Core
 
-Controller Coreは、Mac側で一台のiPhoneに対する操作を直列化する状態機械です。Macアプリ、CLI、物理ボタンなどの入力は、iPhoneへ直接タップを送らず、`running`または`paused`という目標状態を更新します。
+Mac側で、iPhone 1台分の操作を受け持つ部分です。
 
-`DeviceWorker`は`CaptureAppAdapter`から現在画面と次の一操作を受け取り、最新の目標状態へ近づく操作だけを一つずつ実行します。
+`DeviceWorker`は、`running`または`paused`という目標の状態を持ち、`CaptureAppAdapter`から現在の画面と次の操作を受け取って、操作を一つずつ実行します。開始や一時停止の指示はタップに直接変えず、目標の状態を書き換えるだけです。終了するときは`pauseAndStop()`で一時停止まで進めてから止めます。送った操作の途中なら、それが終わるのを待ちます。
 
-`CaptureCourseAdapter`は、JSONのアプリ別操作定義を読み込み、画面判定、次の操作の選択、タップを行う共通実装です。`CaptureAppAdapter`インターフェースを通じてDevice Workerから呼び出されます。アプリごとのbundle identifier、画面判定条件、タップ対象、状態遷移は操作定義に記述します。
+`CaptureCourseAdapter`は、アプリ別の操作定義（JSON）を読み込み、画面の判定、次の操作の選択、タップを行います。`CaptureAppAdapter`の実装として`DeviceWorker`から呼ばれます。
 
-`AppiumSession`は、実機上のWebDriverAgentセッションを作り、アクセシビリティ要素の検索とタップを行う共通HTTP接続です。端末ごとのポート、UDID、署名Teamは起動時に与えます。
+`AppiumSession`は、iPhone上のWebDriverAgentとのセッションを作り、アクセシビリティ要素の検索とタップを行います。端末ごとのポート、UDID、署名チームは起動時に与えます。
 
-画面を一意に判定できない場合、または操作定義に登録したログイン・権限要求・警告の要素を検出した場合は`needsAttention`になり、オペレーターが確認するまで操作を再開しません。
+画面を一つに決められないとき、操作定義に登録したログイン・権限の確認・警告の画面が出たとき、タップの結果がわからなくなったときは`needsAttention`になり、人が確認して再開するまで操作しません。
 
 ```sh
 swift test
 ```
 
-操作定義例は[`apps/minute-app`](../../apps/minute-app/README.md)と[`apps/claru-app`](../../apps/claru-app/README.md)にあります。署名チーム、端末UDID、対象タスク、実機から確認した識別子はローカル設定で与え、コミットしません。
-
-```sh
-swift run --package-path mac/controller-core field-app --course config/local/minute.json
-```
+操作定義の例と起動方法は、[Minute Data](../../apps/minute-app/README.md)と[Claru AI](../../apps/claru-app/README.md)の設定手順にあります。

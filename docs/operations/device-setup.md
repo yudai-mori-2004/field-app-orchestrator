@@ -6,7 +6,7 @@ Macの`field-app`は、iPhone上のWebDriverAgentと直接やり取りします�
 
 ### Mac
 
-Macは、使うiPhoneのiOSに対応するXcodeが動くものを使います。確かめた組み合わせは、macOS 26.3、Xcode 26.4、iOS 26.4.1のiPhone 12 miniです。Xcode 26.4.1はmacOS 26.2以降で動き、macOS 26が入るMac miniはM1（2020年）以降です（[AppleのXcodeの対応表](https://developer.apple.com/support/xcode/)、[macOS Tahoe 26に対応しているコンピュータ](https://support.apple.com/ja-jp/122867)）。
+Macは、使うiPhoneのiOSに対応するXcodeが動くものを使います。確かめた組み合わせは、macOS 26.3、Xcode 26.4、iOS 26.4.1のiPhone 12 miniです。Xcode 26.4.1はmacOS 26.2以降で、Xcode 27はmacOS 26.6以降で動き、macOS 26が入るMac miniはM1（2020年）以降です（[AppleのXcodeの対応表](https://developer.apple.com/support/xcode/)、[macOS Tahoe 26に対応しているコンピュータ](https://support.apple.com/ja-jp/122867)）。iOS 27のiPhoneでは確かめていません。
 
 Macごとに、一度だけ次を済ませます。
 
@@ -50,7 +50,7 @@ iPhoneを足すときは、そのiPhoneをUSBでつなぎ、そのUDIDでもう�
 - MacとiPhoneを同じネットワークにつなぐ。Macからの操作も、背面タップの指示も、このネットワークを通る。ゲスト用のWi-Fiのように端末どうしの通信を止めるネットワークでは届かないので、持ち込みの小さなルーターを使うと現場の設定に左右されない
 - 回線の速さは問わない。録画中のやり取りは、1台あたり1分に6回ほどの短い問い合わせで、返事は合わせて数KBになる
 - Macは電源につなぐ。`field-app`は、動いている間Macをスリープさせない。MacBookはふたを閉じるとスリープするので、開けたままにする
-- Macのローカルホスト名を、役割の名前（`field-mac`など）にする。背面タップのショートカットは、この名前でMacに届く。どの現場のMacにも同じ名前を付けると、iPhoneはどの現場でもショートカットを直さずに使える。Macを替えるときも、新しいMacに同じ名前を付ける。1つのネットワークにMacを2台置くときだけ、名前を分ける。名前は、Macの「システム設定」→「一般」→「共有」の下にある「ローカルホスト名」で変える
+- Macのローカルホスト名を、役割の名前（`field-mac`など）にする。背面タップのショートカットは、この名前でMacに届く。どの現場のMacにも同じ名前を付けると、iPhoneはどの現場でもショートカットを直さずに使える。Macを替えるときも、新しいMacに同じ名前を付け、`config/local/`の設定を写す。ポートとトークンが同じなら、ショートカットはそのまま届く。1つのネットワークにMacを2台置くときだけ、名前を分ける。名前は、Macの「システム設定」→「一般」→「共有」の下にある「ローカルホスト名」で変える
 
 ## 起動と指示
 

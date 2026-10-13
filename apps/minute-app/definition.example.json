@@ -28,9 +28,17 @@
       "present": [{ "name": "Recording too short", "type": "StaticText" }]
     },
     {
+      "id": "time-limit-dialog",
+      "present": [{ "name": "Maximum time limit reached", "type": "StaticText" }]
+    },
+    {
       "id": "review",
       "present": [{ "name": "record-accept" }, { "name": "record-delete" }],
-      "absent": [{ "name": "Save this Minute?", "type": "StaticText" }, { "name": "Discard this recording?", "type": "StaticText" }]
+      "absent": [
+        { "name": "Maximum time limit reached", "type": "StaticText" },
+        { "name": "Save this Minute?", "type": "StaticText" },
+        { "name": "Discard this recording?", "type": "StaticText" }
+      ]
     },
     { "id": "save-dialog", "present": [{ "name": "Save this Minute?", "type": "StaticText" }] },
     {
@@ -112,6 +120,13 @@
       "impact": "navigation"
     },
     {
+      "id": "accept-time-limit",
+      "from": ["time-limit-dialog"],
+      "tap": { "name": "OK", "type": "Other" },
+      "to": "review",
+      "impact": "navigation"
+    },
+    {
       "id": "open-save",
       "from": ["review"],
       "tap": { "name": "record-accept" },
@@ -163,7 +178,7 @@
   ],
   "appTransitions": [
     { "from": "countdown", "to": "recording" },
-    { "from": "recording", "to": "review" }
+    { "from": "recording", "to": "time-limit-dialog" }
   ],
   "goals": {
     "running": ["recording"],

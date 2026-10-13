@@ -253,7 +253,7 @@ struct FieldAppCommand {
       return sentence + "ただ、画面の確認が必要です。"
     case .reconnecting:
       return sentence + "今はiPhoneにつながっていないので、つながったら反映します。"
-    default:
+    case .idle, .stable, .waitingForApp, .transitioning, .stopped:
       return sentence
     }
   }

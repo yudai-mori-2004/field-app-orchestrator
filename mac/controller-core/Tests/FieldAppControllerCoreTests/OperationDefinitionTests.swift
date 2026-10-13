@@ -23,6 +23,7 @@ private actor FakeMinuteApp: AppAutomationSession {
     case countdown(Int)
     case recording(Int)
     case tooShortDialog(Int)
+    case timeLimitDialog(Int)
     case review(Int)
     case saveDialog(Int)
     case discardDialog(Int)
@@ -156,9 +157,11 @@ private actor FakeMinuteApp: AppAutomationSession {
     }
   }
 
+  /// At the time limit, Minute stops the recording and asks to save or
+  /// discard it in a dialog over the review screen.
   func endChunk() {
     if case .recording(let task) = screen {
-      screen = .review(task)
+      screen = .timeLimitDialog(task)
     }
   }
 
@@ -189,7 +192,7 @@ private actor FakeMinuteApp: AppAutomationSession {
     switch screen {
     case .tooShortDialog:
       return !["record-stop", "record-screen"].contains(element.name)
-    case .saveDialog, .discardDialog:
+    case .timeLimitDialog, .saveDialog, .discardDialog:
       return !["record-accept", "record-delete", "record-screen"].contains(element.name)
     default:
       return true
@@ -238,6 +241,8 @@ private actor FakeMinuteApp: AppAutomationSession {
       screen = .tasks
     case (.tooShortDialog(let task), "Start over") where element.type == "XCUIElementTypeOther":
       screen = .armed(task)
+    case (.timeLimitDialog(let task), "OK") where element.type == "XCUIElementTypeOther":
+      screen = .review(task)
     case (.review(let task), "record-accept"):
       screen = .saveDialog(task)
     case (.review(let task), "record-delete"):
@@ -407,6 +412,12 @@ private actor FakeMinuteApp: AppAutomationSession {
         element("OK", "StaticText"), element("Start over", "Other"),
         element("Start over", "StaticText"),
       ]
+    case .timeLimitDialog:
+      return reviewButtons + [
+        element("Maximum time limit reached", "StaticText"),
+        element("Maximum time limit reached", "StaticText"),
+        element("OK", "Other"), element("OK", "StaticText"),
+      ]
     case .review:
       return reviewButtons
     case .saveDialog:
@@ -569,7 +580,8 @@ final class OperationDefinitionTests: XCTestCase {
     let task = FakeMinuteApp.assignedTask
     let starts: [FakeMinuteApp.Screen] = [
       .tasks, .minutes, .settings, .card(5), .card(task), .armed(task), .countdown(task),
-      .recording(task), .tooShortDialog(task), .review(task), .saveDialog(task),
+      .recording(task), .tooShortDialog(task), .timeLimitDialog(task), .review(task),
+      .saveDialog(task),
       .discardDialog(task), .saved(task),
     ]
     for afterRecording in [AfterRecording.discard, .save] {
@@ -663,8 +675,8 @@ final class OperationDefinitionTests: XCTestCase {
   func testRecordingLoopsThroughChunkEndsUnderEitherPolicy() async throws {
     let task = FakeMinuteApp.assignedTask
     let tapsPerChunk: [AfterRecording: [String]] = [
-      .discard: ["record-delete", "Discard", "record-arm"],
-      .save: ["record-accept", "Save", "record-continue", "record-arm"],
+      .discard: ["OK", "record-delete", "Discard", "record-arm"],
+      .save: ["OK", "record-accept", "Save", "record-continue", "record-arm"],
     ]
     for (afterRecording, chunkTaps) in tapsPerChunk {
       let app = FakeMinuteApp(screen: .recording(task))

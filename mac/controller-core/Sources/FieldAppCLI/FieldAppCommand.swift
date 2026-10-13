@@ -218,39 +218,23 @@ struct FieldAppCommand {
     guard token.count >= 16 else {
       throw FieldAppCLIError.invalidEnvironment("FAO_CONTROL_TOKEN must be at least 16 characters.")
     }
+    let replies = WearerReplies()
     let server = try ControlServer(port: port, token: token) { request in
-      let reply = await answer(request, worker: worker)
+      let requested: DesiredCaptureState = request == .start ? .running : .paused
+      let revision = await worker.setDesiredState(requested)
       await doorbell.ring()
+      print("\(timestamp()) requested \(requested.rawValue) (\(request.rawValue) from the control port)")
+
+      // The Shortcut waits for this reply, so a start that takes longer, such
+      // as while the app searches its task list, is answered as under way.
+      let outcome = await worker.outcome(of: revision, within: .seconds(10))
+      let reply = await replies.sentence(requested: requested, outcome: outcome)
+      print("\(timestamp()) replied \"\(reply)\"")
       return reply
     }
     server.start()
-    print("Listening for start, pause, and toggle on port \(port).")
+    print("Listening for start and pause on port \(port).")
     return server
-  }
-
-  private static func answer(_ request: ControlRequest, worker: DeviceWorker) async -> String {
-    let requested: DesiredCaptureState
-    switch request {
-    case .start:
-      requested = .running
-    case .pause:
-      requested = .paused
-    case .toggle:
-      requested = await worker.snapshot().desiredState == .running ? .paused : .running
-    }
-    await worker.setDesiredState(requested)
-    print("\(timestamp()) requested \(requested.rawValue) (\(request.rawValue) from the control port)")
-
-    let snapshot = await worker.snapshot()
-    let sentence = snapshot.desiredState == .running ? "撮影を始めます。" : "撮影を止めます。"
-    switch snapshot.phase {
-    case .needsAttention:
-      return sentence + "ただ、画面の確認が必要です。"
-    case .reconnecting:
-      return sentence + "今はiPhoneにつながっていないので、つながったら反映します。"
-    case .idle, .stable, .waitingForApp, .transitioning, .stopped:
-      return sentence
-    }
   }
 
   /// Prints the message and shows it as a notification on the Mac.

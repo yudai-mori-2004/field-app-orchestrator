@@ -136,8 +136,17 @@ public actor DeviceWorker {
     }
   }
   private var revision: UInt64 = 0
+  /// The latest command revision the current phase answers. The phase can be
+  /// older than a command until a reconcile pass has looked at the device
+  /// for it. `passRevision` is the revision a pass last planned from.
+  private var answeredRevision: UInt64 = 0
+  private var passRevision: UInt64 = 0
   private var isReconciling = false
   private var reconciliationWaiters: [CheckedContinuation<Void, Never>] = []
+  private var outcomeWaiters:
+    [UInt64: (revision: UInt64, continuation: CheckedContinuation<DeviceWorkerSnapshot?, Never>)] =
+      [:]
+  private var nextOutcomeWaiter: UInt64 = 0
   private var isStopping = false
   private var shouldStop = false
   /// Set once the paused state is reached. From then on the worker leaves
@@ -157,15 +166,41 @@ public actor DeviceWorker {
 
   /// A new command also means a person has looked at the device, so it ends
   /// a wait for attention the same way `acknowledgeAndRetry` does. The next
-  /// step is still planned from a fresh observation.
-  public func setDesiredState(_ newState: DesiredCaptureState) {
-    guard !isStopping, !shouldStop else { return }
+  /// step is still planned from a fresh observation. Returns the command's
+  /// revision, for `outcome(of:within:)`.
+  @discardableResult
+  public func setDesiredState(_ newState: DesiredCaptureState) -> UInt64 {
+    guard !isStopping, !shouldStop else { return revision }
     desiredState = newState
     leavesDeviceAlone = false
     if case .needsAttention = phase {
       phase = .idle
     }
     revision &+= 1
+    return revision
+  }
+
+  /// Waits until the device has answered the command at `revision`: a pass
+  /// that planned from it reached the requested state, needs a person, or
+  /// lost the link. Nil when `timeout` passes first, such as while the app
+  /// counts down or the device is slow to answer; the phase at that moment
+  /// may still be the one from before the command.
+  public func outcome(
+    of revision: UInt64,
+    within timeout: Duration
+  ) async -> DeviceWorkerSnapshot? {
+    if hasAnswered(revision) {
+      return snapshot()
+    }
+    nextOutcomeWaiter &+= 1
+    let waiter = nextOutcomeWaiter
+    return await withCheckedContinuation { continuation in
+      outcomeWaiters[waiter] = (revision, continuation)
+      Task {
+        try? await Task.sleep(for: timeout)
+        expireOutcomeWaiter(waiter)
+      }
+    }
   }
 
   /// Leaves the device paused before the worker stops. An action already sent
@@ -192,6 +227,7 @@ public actor DeviceWorker {
     shouldStop = true
     phase = .stopped
     revision &+= 1
+    resumeAnsweredOutcomeWaiters()
     return finalSnapshot
   }
 
@@ -242,6 +278,15 @@ public actor DeviceWorker {
     isReconciling = true
     defer {
       isReconciling = false
+      switch phase {
+      case .needsAttention, .reconnecting:
+        // No command is acted on until these clear, so they answer every
+        // command given so far, including one that arrived during the pass.
+        answeredRevision = revision
+      case .idle, .stable, .waitingForApp, .transitioning, .stopped:
+        answeredRevision = passRevision
+      }
+      resumeAnsweredOutcomeWaiters()
       let waiters = reconciliationWaiters
       reconciliationWaiters.removeAll()
       for waiter in waiters {
@@ -249,6 +294,28 @@ public actor DeviceWorker {
       }
     }
     return await reconcile(maxTransitions: maxTransitions)
+  }
+
+  private func hasAnswered(_ revision: UInt64) -> Bool {
+    switch phase {
+    case .stopped:
+      return true
+    case .stable, .needsAttention, .reconnecting:
+      return answeredRevision >= revision
+    case .idle, .waitingForApp, .transitioning:
+      return false
+    }
+  }
+
+  private func resumeAnsweredOutcomeWaiters() {
+    for (waiter, entry) in outcomeWaiters where hasAnswered(entry.revision) {
+      outcomeWaiters[waiter] = nil
+      entry.continuation.resume(returning: snapshot())
+    }
+  }
+
+  private func expireOutcomeWaiter(_ waiter: UInt64) {
+    outcomeWaiters.removeValue(forKey: waiter)?.continuation.resume(returning: nil)
   }
 
   /// The transition limit applies to each requested state, so a pause that
@@ -275,6 +342,7 @@ public actor DeviceWorker {
         }
         coveredStep = nil
         observation = current
+        passRevision = revision
         // Starting the worker must not change what the device is doing; a
         // recording in progress continues until someone asks for a state.
         guard let requested = desiredState else {

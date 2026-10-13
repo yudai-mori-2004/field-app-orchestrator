@@ -4,12 +4,11 @@ import Network
 enum ControlRequest: String, Sendable {
   case start
   case pause
-  case toggle
 }
 
-/// Accepts start, pause, and toggle requests over HTTP from a Shortcut that
-/// the wearer runs with a back tap. The reply is a short sentence for the
-/// Shortcut to read aloud, because the wearer cannot see the screen.
+/// Accepts start and pause requests over HTTP from the Shortcuts that the
+/// wearer runs with back taps. The reply is a short sentence for the Shortcut
+/// to read aloud, because the wearer cannot see the screen.
 final class ControlServer: Sendable {
   private let listener: NWListener
   private let token: String
@@ -60,7 +59,7 @@ final class ControlServer: Sendable {
     }
   }
 
-  /// Reads the request line, for example `POST /toggle?token=... HTTP/1.1`.
+  /// Reads the request line, for example `POST /start?token=... HTTP/1.1`.
   private func parse(_ text: String) -> (status: String, request: ControlRequest?) {
     let requestLine = text.prefix { $0 != "\r" && $0 != "\n" }.split(separator: " ")
     guard requestLine.count >= 2, requestLine[0] == "POST",

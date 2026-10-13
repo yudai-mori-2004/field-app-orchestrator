@@ -147,6 +147,51 @@ final class AppiumSessionTests: XCTestCase {
     XCTAssertFalse(AppiumStub.requests.contains("DELETE /session/s1"))
   }
 
+  /// A refusal is an answer about the screen, which a person has to look at.
+  /// Treated as a lost link, it would reconnect and refuse again forever.
+  func testRefusalKeepsTheSessionAndAnUnreachableAgentDropsIt() async throws {
+    AppiumStub.answer([
+      "POST /session": Self.newSession,
+      "GET /session/s1/window/rect": Self.window,
+      "POST /session/s1/appium/settings": Self.done,
+      "POST /session/s1/execute/sync": (
+        400,
+        #"{"value":{"error":"invalid element state","message":"Failed to find button with label '閉じる'"}}"#
+      ),
+      "POST /session/s1/element/e1/click": (
+        500,
+        #"{"value":{"error":"unknown error","message":"Could not proxy command to the remote server"}}"#
+      ),
+      "DELETE /session/s1": Self.done,
+    ])
+    let session = try await AppiumSession.start(configuration: configuration())
+
+    do {
+      try await session.tapSystemAlertButton("閉じる")
+      XCTFail("A refused button press did not fail.")
+    } catch let error as AppiumAutomationError {
+      XCTAssertEqual(error, .refused("invalid element state: Failed to find button with label '閉じる'"))
+      XCTAssertFalse(error.isLinkFailure)
+    }
+    let pressed = AppiumStub.body(of: "POST /session/s1/execute/sync")
+    XCTAssertEqual(pressed?["script"] as? String, "mobile: alert")
+    XCTAssertEqual(
+      (pressed?["args"] as? [[String: String]])?.first,
+      ["action": "accept", "buttonLabel": "閉じる"]
+    )
+    XCTAssertFalse(AppiumStub.requests.contains("DELETE /session/s1"))
+
+    do {
+      try await session.tap(
+        AutomationElement(identifier: "e1", name: "record-stop", type: "XCUIElementTypeButton")
+      )
+      XCTFail("A tap through an unreachable WebDriverAgent did not fail.")
+    } catch let error as AppiumAutomationError {
+      XCTAssertTrue(error.isLinkFailure)
+    }
+    XCTAssertEqual(AppiumStub.requests.last, "DELETE /session/s1")
+  }
+
   func testSessionWhoseSettingsFailIsNotUsed() async throws {
     AppiumStub.answer([
       "POST /session": Self.newSession,

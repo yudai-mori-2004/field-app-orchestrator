@@ -55,7 +55,8 @@ private actor FakeMinuteApp: AppAutomationSession {
   private var firstRenderedCard = 0
   private var listSettlingAtTop = false
   private var frontmost: String? = FakeMinuteApp.bundleIdentifier
-  private var alert: String?
+  private var alert: (text: String, buttons: [String])?
+  private var pendingAlert: (afterReads: Int, text: String, buttons: [String])?
   private var droppedTaps: Set<String> = []
   private var failingCalls = 0
   private var locked = false
@@ -124,8 +125,25 @@ private actor FakeMinuteApp: AppAutomationSession {
     locked = false
   }
 
-  func showAlert(_ text: String) {
-    alert = text
+  func showAlert(_ text: String, buttons: [String] = ["OK"]) {
+    alert = (text, buttons)
+  }
+
+  /// The alert opens once the screen has been read `count` more times, the
+  /// way an alert can open between reading the screen and tapping it.
+  func showAlert(_ text: String, buttons: [String], afterReads count: Int) {
+    pendingAlert = (reads + count, text, buttons)
+  }
+
+  private func openPendingAlert() {
+    if let pendingAlert, reads >= pendingAlert.afterReads {
+      alert = (pendingAlert.text, pendingAlert.buttons)
+      self.pendingAlert = nil
+    }
+  }
+
+  var alertIsOpen: Bool {
+    alert != nil
   }
 
   func dropNextTap(on name: String) {
@@ -146,6 +164,7 @@ private actor FakeMinuteApp: AppAutomationSession {
 
   func elements(matching selectors: [ElementSelector]) async throws -> [AutomationElement] {
     try failIfLinkIsDown()
+    openPendingAlert()
     if let pendingMove, reads >= pendingMove.afterReads {
       screen = pendingMove.screen
       self.pendingMove = nil
@@ -305,7 +324,22 @@ private actor FakeMinuteApp: AppAutomationSession {
   }
 
   func systemAlertText() async throws -> String? {
-    alert
+    openPendingAlert()
+    return alert?.text
+  }
+
+  func tapSystemAlertButton(_ label: String) async throws {
+    guard let alert else {
+      throw AppiumAutomationError.noSuchAlert
+    }
+    // WebDriverAgent refuses a label the alert does not have.
+    guard alert.buttons.contains(label) else {
+      throw AppiumAutomationError.refused(
+        "invalid element state: Failed to find button with label '\(label)'"
+      )
+    }
+    taps.append(label)
+    self.alert = nil
   }
 
   func close() async {}
@@ -395,6 +429,13 @@ private actor FakeMinuteApp: AppAutomationSession {
       return [element("something-else", "Other")]
     }
   }
+}
+
+/// The low-battery alert of iOS 26 in Japanese. WebDriverAgent joins its
+/// title and message with a line break.
+private enum LowBatteryAlert {
+  static let text = "バッテリー残量低下\nバッテリー残量はあと20%です。"
+  static let buttons = ["閉じる", "低電力モード"]
 }
 
 private enum MinuteDefinition {
@@ -488,6 +529,39 @@ final class OperationDefinitionTests: XCTestCase {
       }
       XCTAssertTrue(detail.contains("no route reaches running from"), detail)
       XCTAssertTrue(detail.contains("review"), detail)
+    }
+  }
+
+  func testSystemAlertNeedsItsOwnIdTextAndButton() throws {
+    let complete = try MinuteDefinition.load()
+    func definition(with alert: DefinitionSystemAlert) -> OperationDefinition {
+      OperationDefinition(
+        identifier: complete.identifier,
+        displayName: complete.displayName,
+        bundleIdentifier: complete.bundleIdentifier,
+        afterRecording: complete.afterRecording,
+        states: complete.states,
+        actions: complete.actions,
+        appTransitions: complete.appTransitions,
+        goals: complete.goals,
+        systemAlerts: [alert]
+      )
+    }
+
+    let sharedId = definition(with: DefinitionSystemAlert(id: "start-task", textContains: "残量", button: "閉じる"))
+    let noButton = definition(with: DefinitionSystemAlert(id: "close-alert", textContains: "残量", button: ""))
+
+    XCTAssertThrowsError(try sharedId.validate()) { error in
+      XCTAssertEqual(
+        error as? OperationDefinitionError,
+        .invalidDefinition("action and system alert ids must be unique and non-empty")
+      )
+    }
+    XCTAssertThrowsError(try noButton.validate()) { error in
+      XCTAssertEqual(
+        error as? OperationDefinitionError,
+        .invalidDefinition("every system alert needs textContains and button")
+      )
     }
   }
 
@@ -586,23 +660,35 @@ final class OperationDefinitionTests: XCTestCase {
     XCTAssertEqual(recording.observation, .state("recording"))
   }
 
-  func testNaturalChunkEndSavesAndStartsTheNextChunk() async throws {
+  func testRecordingLoopsThroughChunkEndsUnderEitherPolicy() async throws {
     let task = FakeMinuteApp.assignedTask
-    let app = FakeMinuteApp(screen: .recording(task))
-    let worker = try MinuteDefinition.worker(for: app, afterRecording: .save)
-    await worker.setDesiredState(.running)
-    _ = await settle(worker, app)
+    let tapsPerChunk: [AfterRecording: [String]] = [
+      .discard: ["record-delete", "Discard", "record-arm"],
+      .save: ["record-accept", "Save", "record-continue", "record-arm"],
+    ]
+    for (afterRecording, chunkTaps) in tapsPerChunk {
+      let app = FakeMinuteApp(screen: .recording(task))
+      let worker = try MinuteDefinition.worker(for: app, afterRecording: afterRecording)
+      await worker.setDesiredState(.running)
+      _ = await settle(worker, app)
 
-    await app.endChunk()
-    let snapshot = await settle(worker, app)
+      var snapshot = await worker.snapshot()
+      for _ in 0..<3 {
+        await app.endChunk()
+        snapshot = await settle(worker, app)
+      }
 
-    let taps = await app.taps
-    let saved = await app.saved
-    let screen = await app.screen
-    XCTAssertEqual(snapshot.phase, .stable)
-    XCTAssertEqual(taps, ["record-accept", "Save", "record-continue", "record-arm"])
-    XCTAssertEqual(saved, 1)
-    XCTAssertEqual(screen, .recording(task))
+      let taps = await app.taps
+      let saved = await app.saved
+      let discarded = await app.discarded
+      let screen = await app.screen
+      let context = "\(afterRecording)"
+      XCTAssertEqual(snapshot.phase, .stable, context)
+      XCTAssertEqual(screen, .recording(task), context)
+      XCTAssertEqual(taps, Array(repeating: chunkTaps, count: 3).flatMap { $0 }, context)
+      XCTAssertEqual(afterRecording == .save ? saved : discarded, 3, context)
+      XCTAssertEqual(afterRecording == .save ? discarded : saved, 0, context)
+    }
   }
 
   func testPauseEndsTheChunkAndTurnsTheCameraOff() async throws {
@@ -671,6 +757,7 @@ final class OperationDefinitionTests: XCTestCase {
       snapshot.phase,
       .needsAttention(
         "Action stop-recording found its element covered by a screen the definition does not describe."
+          + " The definition does not allow restarting the app on this screen."
       )
     )
     XCTAssertEqual(taps, [])
@@ -809,7 +896,58 @@ final class OperationDefinitionTests: XCTestCase {
     XCTAssertEqual(relaunches, 1)
   }
 
-  func testSystemAlertStopsTheWorkerBeforeAnyTap() async throws {
+  func testLowBatteryAlertIsClosedAndTheRecordingContinues() async throws {
+    let task = FakeMinuteApp.assignedTask
+    let app = FakeMinuteApp(screen: .recording(task))
+    let worker = try MinuteDefinition.worker(for: app)
+    await worker.setDesiredState(.running)
+    _ = await settle(worker, app)
+    await app.showAlert(LowBatteryAlert.text, buttons: LowBatteryAlert.buttons)
+
+    let snapshot = await settle(worker, app)
+
+    let taps = await app.taps
+    let alertIsOpen = await app.alertIsOpen
+    let screen = await app.screen
+    XCTAssertEqual(snapshot.phase, .stable)
+    XCTAssertEqual(taps, ["閉じる"])
+    XCTAssertFalse(alertIsOpen)
+    XCTAssertEqual(screen, .recording(task))
+  }
+
+  func testAlertOpeningJustBeforeATapIsClosedBeforeTheTap() async throws {
+    let task = FakeMinuteApp.assignedTask
+    let app = FakeMinuteApp(screen: .armed(task))
+    let worker = try MinuteDefinition.worker(for: app)
+    // The first read finds the camera ready and the second confirms it; the
+    // alert opens right after, before the record button is tapped.
+    await app.showAlert(LowBatteryAlert.text, buttons: LowBatteryAlert.buttons, afterReads: 2)
+
+    await worker.setDesiredState(.running)
+    let snapshot = await settle(worker, app)
+
+    let taps = await app.taps
+    let screen = await app.screen
+    XCTAssertEqual(snapshot.phase, .stable)
+    XCTAssertEqual(taps, ["閉じる", "record-arm"])
+    XCTAssertEqual(screen, .recording(task))
+  }
+
+  func testDescribedAlertWithoutItsButtonWaitsForAPerson() async throws {
+    let app = FakeMinuteApp(screen: .recording(FakeMinuteApp.assignedTask))
+    await app.showAlert(LowBatteryAlert.text, buttons: ["OK"])
+    let worker = try MinuteDefinition.worker(for: app)
+
+    await worker.setDesiredState(.running)
+    let snapshot = await worker.reconcileUntilStable()
+
+    guard case .needsAttention(let reason) = snapshot.phase else {
+      return XCTFail("A refused button press was not handed to a person: \(snapshot.phase)")
+    }
+    XCTAssertTrue(reason.contains("閉じる"), reason)
+  }
+
+  func testUndescribedSystemAlertWaitsForAPerson() async throws {
     let app = FakeMinuteApp(screen: .tasks)
     await app.showAlert("Allow access to the camera?")
     let worker = try MinuteDefinition.worker(for: app)

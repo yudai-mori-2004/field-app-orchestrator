@@ -7,8 +7,15 @@ public enum DesiredCaptureState: String, Codable, CaseIterable, Sendable, Equata
 
 /// What the device shows, as far as the operation definition can tell.
 public enum CaptureObservation: Sendable, Equatable {
+  /// A screen of the app that the definition describes.
   case state(String)
+  /// A system alert in front of everything, with its text.
+  case systemAlert(String)
+  case locked
+  /// Another app, the home screen, or a system screen such as Control
+  /// Center is in front.
   case outsideApp(String?)
+  /// A screen of the app that the definition does not describe.
   case unknown(String)
 }
 
@@ -30,14 +37,24 @@ public struct CaptureAction: Sendable, Equatable, Hashable {
   }
 }
 
+/// What to do next. Every observation leads to one of these.
 public enum CaptureStep: Sendable, Equatable {
+  /// The device is in the requested state.
   case settled
+  /// The app moves on by itself, such as a countdown ending.
   case waitForApp
   case perform(CaptureAction)
+  /// Leaves a screen the definition does not describe, such as by restarting
+  /// the app. The worker allows one per pass; `reason` says what a person
+  /// should look at when it is not allowed.
+  case recover(CaptureAction, reason: String)
+  /// Only a person can go on from here.
+  case needsAttention(String)
 }
 
 /// A step that was planned from a screen the app has already left, such as a
-/// button that disappeared before the tap. The worker observes again.
+/// button that disappeared before or during its tap. The worker observes
+/// again.
 public protocol CaptureStaleStepError: Error {}
 
 /// A step whose button something the definition does not describe covers,
@@ -60,15 +77,6 @@ public protocol CaptureAppAdapter: Sendable {
     from observation: CaptureObservation
   ) async throws -> CaptureStep
   func perform(_ action: CaptureAction, from observation: CaptureObservation) async throws
-  /// A way back to known ground from an unknown screen, such as restarting
-  /// the app. Nil when only a person can help.
-  func recovery(from observation: CaptureObservation) async throws -> CaptureAction?
-}
-
-extension CaptureAppAdapter {
-  public func recovery(from observation: CaptureObservation) async throws -> CaptureAction? {
-    nil
-  }
 }
 
 public enum DeviceWorkerPhase: Sendable, Equatable {
@@ -251,7 +259,7 @@ public actor DeviceWorker {
     // One recovery per pass: a screen that is still unknown afterwards needs
     // a person.
     var mayRecover = true
-    var coveredStep: (observation: CaptureObservation, detail: String)?
+    var coveredStep: CoveredStep?
     while observationsTowardTarget < maxTransitions {
       guard !shouldStop else {
         phase = .stopped
@@ -276,18 +284,6 @@ public actor DeviceWorker {
         if leavesDeviceAlone {
           return snapshot()
         }
-        if case .unknown(let detail) = current {
-          if mayRecover, let recovery = try await adapter.recovery(from: current) {
-            mayRecover = false
-            observationsTowardTarget += 1
-            phase = .transitioning(recovery)
-            onEvent?(.performing(recovery))
-            try await adapter.perform(recovery, from: current)
-            continue
-          }
-          phase = .needsAttention(detail)
-          return snapshot()
-        }
 
         if requested != target {
           target = requested
@@ -303,14 +299,18 @@ public actor DeviceWorker {
         case .waitForApp:
           phase = .waitingForApp
           return snapshot()
-        case .perform(let action):
-          phase = .transitioning(action)
-          onEvent?(.performing(action))
-          do {
-            try await adapter.perform(action, from: current)
-          } catch let error as CaptureCoveredStepError {
-            coveredStep = (current, Self.describe(error))
+        case .needsAttention(let reason):
+          phase = .needsAttention(reason)
+          return snapshot()
+        case .recover(let action, let reason):
+          guard mayRecover else {
+            phase = .needsAttention(reason)
+            return snapshot()
           }
+          mayRecover = false
+          coveredStep = try await run(action, from: current)
+        case .perform(let action):
+          coveredStep = try await run(action, from: current)
         }
       } catch is CaptureStaleStepError {
         continue
@@ -334,6 +334,27 @@ public actor DeviceWorker {
     phase = .needsAttention(
       "The app did not reach the requested state within the transition limit.")
     return snapshot()
+  }
+
+  /// Performs one action. When something the definition does not describe
+  /// covers its button, returns the screen the action was planned from.
+  private func run(
+    _ action: CaptureAction,
+    from observation: CaptureObservation
+  ) async throws -> CoveredStep? {
+    phase = .transitioning(action)
+    onEvent?(.performing(action))
+    do {
+      try await adapter.perform(action, from: observation)
+      return nil
+    } catch let error as CaptureCoveredStepError {
+      return CoveredStep(observation: observation, detail: Self.describe(error))
+    }
+  }
+
+  private struct CoveredStep {
+    let observation: CaptureObservation
+    let detail: String
   }
 
   private static func describe(_ error: any Error) -> String {

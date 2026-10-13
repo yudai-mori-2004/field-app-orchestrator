@@ -169,6 +169,9 @@
     "running": ["recording"],
     "paused": ["assigned-task-card"]
   },
+  "systemAlerts": [
+    { "id": "close-low-battery-alert", "textContains": "バッテリー残量はあと", "button": "閉じる" }
+  ],
   "recovery": {
     "relaunchUnless": [{ "name": "record-screen" }]
   }

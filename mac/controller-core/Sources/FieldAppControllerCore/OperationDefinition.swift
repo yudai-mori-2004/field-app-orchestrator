@@ -90,6 +90,21 @@ public struct AppTransition: Codable, Sendable, Equatable {
   }
 }
 
+/// A system alert that may appear while the app is in use, recognized by
+/// part of its text, and the button that closes it without changing
+/// anything else.
+public struct DefinitionSystemAlert: Codable, Sendable, Equatable {
+  public let id: String
+  public let textContains: String
+  public let button: String
+
+  public init(id: String, textContains: String, button: String) {
+    self.id = id
+    self.textContains = textContains
+    self.button = button
+  }
+}
+
 /// How to get back to known ground from a screen the definition does not
 /// describe.
 public struct DefinitionRecovery: Codable, Sendable, Equatable {
@@ -136,6 +151,7 @@ public struct OperationDefinition: Codable, Sendable, Equatable {
   public let actions: [DefinitionAction]
   public let appTransitions: [AppTransition]
   public let goals: DefinitionGoals
+  public let systemAlerts: [DefinitionSystemAlert]
   public let recovery: DefinitionRecovery?
 
   public init(
@@ -147,6 +163,7 @@ public struct OperationDefinition: Codable, Sendable, Equatable {
     actions: [DefinitionAction],
     appTransitions: [AppTransition],
     goals: DefinitionGoals,
+    systemAlerts: [DefinitionSystemAlert] = [],
     recovery: DefinitionRecovery? = nil
   ) {
     self.identifier = identifier
@@ -157,7 +174,36 @@ public struct OperationDefinition: Codable, Sendable, Equatable {
     self.actions = actions
     self.appTransitions = appTransitions
     self.goals = goals
+    self.systemAlerts = systemAlerts
     self.recovery = recovery
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case identifier
+    case displayName
+    case bundleIdentifier
+    case afterRecording
+    case states
+    case actions
+    case appTransitions
+    case goals
+    case systemAlerts
+    case recovery
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    identifier = try container.decode(String.self, forKey: .identifier)
+    displayName = try container.decode(String.self, forKey: .displayName)
+    bundleIdentifier = try container.decode(String.self, forKey: .bundleIdentifier)
+    afterRecording = try container.decode(AfterRecording.self, forKey: .afterRecording)
+    states = try container.decode([DefinitionState].self, forKey: .states)
+    actions = try container.decode([DefinitionAction].self, forKey: .actions)
+    appTransitions = try container.decode([AppTransition].self, forKey: .appTransitions)
+    goals = try container.decode(DefinitionGoals.self, forKey: .goals)
+    systemAlerts =
+      try container.decodeIfPresent([DefinitionSystemAlert].self, forKey: .systemAlerts) ?? []
+    recovery = try container.decodeIfPresent(DefinitionRecovery.self, forKey: .recovery)
   }
 
   public func validate() throws {
@@ -189,9 +235,19 @@ public struct OperationDefinition: Codable, Sendable, Equatable {
       )
     }
 
-    let actionIdentifiers = actions.map(\.id)
-    guard Set(actionIdentifiers).count == actions.count, !actionIdentifiers.contains("") else {
-      throw OperationDefinitionError.invalidDefinition("action ids must be unique and non-empty")
+    // Closing a system alert is a step like a tap, so both share one set of
+    // ids.
+    let actionIdentifiers = actions.map(\.id) + systemAlerts.map(\.id)
+    guard Set(actionIdentifiers).count == actionIdentifiers.count, !actionIdentifiers.contains("")
+    else {
+      throw OperationDefinitionError.invalidDefinition(
+        "action and system alert ids must be unique and non-empty"
+      )
+    }
+    guard systemAlerts.allSatisfy({ !$0.textContains.isEmpty && !$0.button.isEmpty }) else {
+      throw OperationDefinitionError.invalidDefinition(
+        "every system alert needs textContains and button"
+      )
     }
     for action in actions {
       guard !action.from.isEmpty, action.from.allSatisfy(knownStates.contains),
@@ -261,6 +317,11 @@ public struct OperationDefinition: Codable, Sendable, Equatable {
         [action.tap] + (action.search.map { [$0.container, $0.items] } ?? [])
       }
       + (recovery?.relaunchUnless ?? [])
+  }
+
+  /// The first described alert whose text is part of `text`.
+  func systemAlert(matching text: String) -> DefinitionSystemAlert? {
+    systemAlerts.first { text.contains($0.textContains) }
   }
 
   func allows(_ impact: CaptureActionImpact) -> Bool {
@@ -338,58 +399,67 @@ public struct OperationDefinition: Codable, Sendable, Equatable {
 
 public enum OperationDefinitionError: Error, LocalizedError, Sendable, Equatable {
   case invalidDefinition(String)
-  case unknownScreen(String)
-  case noRoute(from: String, toward: DesiredCaptureState)
   case expectedExactlyOneElement(action: String, found: Int)
   case unsupportedAction(String)
-  case systemAlert(String)
   case deviceLocked
 
   public var errorDescription: String? {
     switch self {
     case .invalidDefinition(let detail):
       return "Invalid operation definition: \(detail)"
-    case .unknownScreen(let detail):
-      return detail
-    case .noRoute(let state, let desiredState):
-      return "No allowed route leads from \(state) to \(desiredState.rawValue)."
     case .expectedExactlyOneElement(let action, let found):
       return "Action \(action) expected exactly one element; found \(found)."
     case .unsupportedAction(let identifier):
       return "The definition does not support action \(identifier)."
-    case .systemAlert(let text):
-      return "A system alert needs a person: \(text)"
     case .deviceLocked:
       return "The device is locked and could not be unlocked. A person needs to unlock it."
     }
   }
 }
 
-/// The element an action was going to tap is no longer on screen, because the
-/// app moved on after the step was planned.
-struct TargetLeftScreen: CaptureStaleStepError {}
+/// The app left the screen a step was planned from, for example when a
+/// button disappeared before or during its tap.
+struct ScreenMovedOn: CaptureStaleStepError {}
 
 /// Something the definition does not describe, such as a sheet the app
-/// opened, covers the element an action was going to tap. The elements under
-/// it stay in place, so the screen still matches the state it covers.
+/// opened or an alert, covers the element an action was going to tap. The
+/// elements under it stay in place, so the screen still matches the state it
+/// covers.
 struct TargetCovered: CaptureCoveredStepError, LocalizedError {
   let action: String
+  let cover: String
 
   var errorDescription: String? {
-    "Action \(action) found its element covered by a screen the definition does not describe."
+    "Action \(action) found its element covered by \(cover)."
   }
 }
 
-/// Runs an operation definition on one device: reads which state the app is
-/// in, plans the next step toward the requested state, and taps one element
+/// Runs an operation definition on one device: reads what the device shows,
+/// plans the next step toward the requested state, and carries out one step
 /// at a time.
 public struct OperationDefinitionAdapter: CaptureAppAdapter {
-  static let activateApp = CaptureAction(identifier: "system.activate-app", impact: .navigation)
-  static let relaunchApp = CaptureAction(identifier: "system.relaunch-app", impact: .navigation)
+  /// What a step does on the device.
+  private enum Move {
+    case tap(DefinitionAction)
+    case closeAlert(DefinitionSystemAlert)
+    case unlock
+    case activateApp
+    case relaunchApp
+  }
+
+  private static let unlock = CaptureAction(identifier: "system.unlock", impact: .navigation)
+  private static let activateApp = CaptureAction(
+    identifier: "system.activate-app",
+    impact: .navigation
+  )
+  private static let relaunchApp = CaptureAction(
+    identifier: "system.relaunch-app",
+    impact: .navigation
+  )
 
   private let session: any AppAutomationSession
   private let definition: OperationDefinition
-  private let actionsByRuntimeAction: [CaptureAction: DefinitionAction]
+  private let moves: [CaptureAction: Move]
   private let pollNanoseconds: UInt64
   private let settleReads: Int
   private let actionPolls: Int
@@ -410,11 +480,19 @@ public struct OperationDefinitionAdapter: CaptureAppAdapter {
     self.pollNanoseconds = pollNanoseconds
     self.settleReads = settleReads
     self.actionPolls = actionPolls
-    self.actionsByRuntimeAction = Dictionary(
-      uniqueKeysWithValues: definition.actions.map { action in
-        (Self.runtimeAction(for: action, in: definition), action)
-      }
-    )
+
+    var moves: [CaptureAction: Move] = [
+      Self.unlock: .unlock,
+      Self.activateApp: .activateApp,
+      Self.relaunchApp: .relaunchApp,
+    ]
+    for action in definition.actions {
+      moves[Self.step(for: action, in: definition)] = .tap(action)
+    }
+    for alert in definition.systemAlerts {
+      moves[Self.step(for: alert, in: definition)] = .closeAlert(alert)
+    }
+    self.moves = moves
   }
 
   public func observe(after previous: CaptureObservation?) async throws -> CaptureObservation {
@@ -438,67 +516,47 @@ public struct OperationDefinitionAdapter: CaptureAppAdapter {
     from observation: CaptureObservation
   ) async throws -> CaptureStep {
     switch observation {
-    case .outsideApp:
-      return .perform(Self.activateApp)
-    case .unknown(let detail):
-      throw OperationDefinitionError.unknownScreen(detail)
     case .state(let state):
-      guard let step = definition.nextStep(from: state, toward: desiredState) else {
-        throw OperationDefinitionError.noRoute(from: state, toward: desiredState)
-      }
-      switch step {
+      switch definition.nextStep(from: state, toward: desiredState) {
       case .settled:
         return .settled
       case .waitForApp:
         return .waitForApp
       case .perform(let action):
-        return .perform(Self.runtimeAction(for: action, in: definition))
+        return .perform(Self.step(for: action, in: definition))
+      case nil:
+        return .needsAttention("No allowed route leads from \(state) to \(desiredState.rawValue).")
       }
+    case .systemAlert(let text):
+      guard let alert = definition.systemAlert(matching: text) else {
+        return .needsAttention("A system alert needs a person: \(text)")
+      }
+      return .perform(Self.step(for: alert, in: definition))
+    case .locked:
+      return .perform(Self.unlock)
+    case .outsideApp:
+      return .perform(Self.activateApp)
+    case .unknown(let detail):
+      return try await recoveryStep(for: detail)
     }
-  }
-
-  /// Restarting the app leaves any screen of it, but loses what the screens
-  /// marked in the definition hold, such as a recording.
-  public func recovery(from observation: CaptureObservation) async throws -> CaptureAction? {
-    guard case .unknown = observation, let recovery = definition.recovery,
-      try await session.frontmostBundleIdentifier() == definition.bundleIdentifier,
-      try await session.elements(matching: recovery.relaunchUnless).isEmpty
-    else {
-      return nil
-    }
-    return Self.relaunchApp
   }
 
   public func perform(_ action: CaptureAction, from observation: CaptureObservation) async throws {
-    if action == Self.activateApp, try await session.isLocked() {
-      // Unlocking only works without a passcode. With one, a person has to
-      // unlock the device, which is not a problem with the link.
-      try? await session.unlock()
-      if try await session.isLocked() {
-        throw OperationDefinitionError.deviceLocked
-      }
+    guard let move = moves[action] else {
+      throw OperationDefinitionError.unsupportedAction(action.identifier)
     }
-    // A system alert takes any tap for itself and stays in front of the app.
-    if let alert = try await session.systemAlertText() {
-      throw OperationDefinitionError.systemAlert(alert)
-    }
-
-    switch action {
-    case Self.activateApp:
+    switch move {
+    case .tap(let definitionAction):
+      try await tap(definitionAction)
+    case .closeAlert(let alert):
+      try await close(alert)
+    case .unlock:
+      try await unlockDevice()
+    case .activateApp:
       try await session.activateApp()
-    case Self.relaunchApp:
+    case .relaunchApp:
       try await session.terminateApp()
       try await session.activateApp()
-    default:
-      guard let definitionAction = actionsByRuntimeAction[action] else {
-        throw OperationDefinitionError.unsupportedAction(action.identifier)
-      }
-      do {
-        let target = try await locate(definitionAction)
-        try await session.tap(try await reachable(target, for: definitionAction))
-      } catch AppiumAutomationError.staleElement {
-        throw TargetLeftScreen()
-      }
     }
 
     // Capture apps can drop a tap while busy. If the screen stays put, the
@@ -511,36 +569,93 @@ public struct OperationDefinitionAdapter: CaptureAppAdapter {
     }
   }
 
+  /// Restarting the app leaves any of its screens, but loses what the screens
+  /// marked in the definition hold, such as a recording.
+  private func recoveryStep(for detail: String) async throws -> CaptureStep {
+    guard let recovery = definition.recovery else {
+      return .needsAttention(detail)
+    }
+    guard try await session.frontmostBundleIdentifier() == definition.bundleIdentifier else {
+      throw ScreenMovedOn()
+    }
+    guard try await session.elements(matching: recovery.relaunchUnless).isEmpty else {
+      return .needsAttention(
+        "\(detail) The definition does not allow restarting the app on this screen."
+      )
+    }
+    return .recover(Self.relaunchApp, reason: detail)
+  }
+
+  /// Reads the app's elements first, so a device on a known screen costs one
+  /// query per read. The rest is asked only when no state matches.
   private func readState() async throws -> CaptureObservation {
     let elements = try await session.elements(matching: definition.proofSelectors)
     let matching = definition.states.filter { $0.matches(elements) }
-    if matching.count == 1, let state = matching.first {
-      return .state(state.id)
-    }
     if matching.count > 1 {
       return .unknown(
         "\(definition.displayName) matches more than one state: "
           + matching.map(\.id).joined(separator: ", ")
       )
     }
-    let frontmost = try await session.frontmostBundleIdentifier()
-    if frontmost != definition.bundleIdentifier {
-      return .outsideApp(frontmost)
+    if let state = matching.first {
+      return .state(state.id)
     }
-    return .unknown("\(definition.displayName) shows a screen that matches no state.")
+    let frontmost = try await session.frontmostBundleIdentifier()
+    if frontmost == definition.bundleIdentifier {
+      return .unknown("\(definition.displayName) shows a screen that matches no state.")
+    }
+    if try await session.isLocked() {
+      return .locked
+    }
+    if let alert = try await session.systemAlertText() {
+      return .systemAlert(alert)
+    }
+    return .outsideApp(frontmost)
   }
 
+  private func tap(_ action: DefinitionAction) async throws {
+    // The app's elements still look tappable under a system alert, but the
+    // tap would land on the alert.
+    if let alert = try await session.systemAlertText() {
+      throw TargetCovered(action: action.id, cover: "the alert \"\(alert)\"")
+    }
+    do {
+      let target = try await locate(action)
+      try await session.tap(try await reachable(target, for: action))
+    } catch AppiumAutomationError.staleElement {
+      throw ScreenMovedOn()
+    }
+  }
+
+  private func close(_ alert: DefinitionSystemAlert) async throws {
+    do {
+      try await session.tapSystemAlertButton(alert.button)
+    } catch AppiumAutomationError.noSuchAlert {
+      throw ScreenMovedOn()
+    }
+  }
+
+  /// Unlocking only works without a passcode. With one, a person has to
+  /// unlock the device, which is not a problem with the link.
+  private func unlockDevice() async throws {
+    try? await session.unlock()
+    if try await session.isLocked() {
+      throw OperationDefinitionError.deviceLocked
+    }
+  }
+
+  /// A search action looks through its list, where a missing element means
+  /// the task is not there. Any other missing element means the app moved on
+  /// after the step was planned.
   private func locate(_ action: DefinitionAction) async throws -> AutomationElement {
-    var matches = try await session.elements(matching: [action.tap])
-    if matches.isEmpty, let search = action.search {
-      matches = try await scroll(toFind: action.tap, using: search)
-    }
-    if matches.count == 1, let search = action.search {
-      try await center(matches[0], within: search.container)
+    let matches: [AutomationElement]
+    if let search = action.search {
+      matches = try await find(action.tap, using: search)
+    } else {
       matches = try await session.elements(matching: [action.tap])
-    }
-    if matches.isEmpty, action.search == nil {
-      throw TargetLeftScreen()
+      if matches.isEmpty {
+        throw ScreenMovedOn()
+      }
     }
     guard matches.count == 1, let target = matches.first else {
       throw OperationDefinitionError.expectedExactlyOneElement(
@@ -549,6 +664,23 @@ public struct OperationDefinitionAdapter: CaptureAppAdapter {
       )
     }
     return target
+  }
+
+  /// Scrolls to the element when it is not rendered, and brings a single
+  /// match near the middle of the list before it is tapped.
+  private func find(
+    _ selector: ElementSelector,
+    using search: DefinitionSearch
+  ) async throws -> [AutomationElement] {
+    var matches = try await session.elements(matching: [selector])
+    if matches.isEmpty {
+      matches = try await scroll(toFind: selector, using: search)
+    }
+    guard matches.count == 1 else {
+      return matches
+    }
+    try await center(matches[0], within: search.container)
+    return try await session.elements(matching: [selector])
   }
 
   /// A dialog the definition does not know can leave the elements beneath it
@@ -564,7 +696,7 @@ public struct OperationDefinitionAdapter: CaptureAppAdapter {
       }
       try await Task.sleep(nanoseconds: pollNanoseconds)
     }
-    throw TargetCovered(action: action.id)
+    throw TargetCovered(action: action.id, cover: "a screen the definition does not describe")
   }
 
   /// Starts from the top of the list and works downward. Lists that ignore
@@ -639,8 +771,13 @@ public struct OperationDefinitionAdapter: CaptureAppAdapter {
     }
   }
 
+  /// A list that is gone means the app left the screen the step was planned
+  /// from.
   private func uniqueElement(_ selector: ElementSelector) async throws -> AutomationElement {
     let matches = try await session.elements(matching: [selector])
+    if matches.isEmpty {
+      throw ScreenMovedOn()
+    }
     guard matches.count == 1, let element = matches.first else {
       throw OperationDefinitionError.expectedExactlyOneElement(
         action: selector.value,
@@ -650,10 +787,17 @@ public struct OperationDefinitionAdapter: CaptureAppAdapter {
     return element
   }
 
-  private static func runtimeAction(
+  private static func step(
     for action: DefinitionAction,
     in definition: OperationDefinition
   ) -> CaptureAction {
     CaptureAction(identifier: "\(definition.identifier).\(action.id)", impact: action.impact)
+  }
+
+  private static func step(
+    for alert: DefinitionSystemAlert,
+    in definition: OperationDefinition
+  ) -> CaptureAction {
+    CaptureAction(identifier: "\(definition.identifier).\(alert.id)", impact: .navigation)
   }
 }

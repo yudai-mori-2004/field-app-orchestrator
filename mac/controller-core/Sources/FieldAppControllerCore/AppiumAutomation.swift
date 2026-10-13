@@ -158,16 +158,22 @@ public protocol AppAutomationSession: Sendable {
   func unlock() async throws
   func activateApp() async throws
   func terminateApp() async throws
+  /// The title and message of the open system alert, one per line, or nil.
   func systemAlertText() async throws -> String?
+  /// Throws `AppiumAutomationError.noSuchAlert` when no alert is open.
+  func tapSystemAlertButton(_ label: String) async throws
   func close() async
 }
 
 public enum AppiumAutomationError: Error, LocalizedError, Sendable, Equatable {
   case invalidConfiguration(String)
+  /// The link to Appium or WebDriverAgent failed, or the session is gone.
   case malformedResponse(String)
   case commandFailed(String)
+  /// Answers from a working session about what is on screen.
   case noSuchAlert
   case staleElement
+  case refused(String)
 
   public var errorDescription: String? {
     switch self {
@@ -181,6 +187,8 @@ public enum AppiumAutomationError: Error, LocalizedError, Sendable, Equatable {
       return "No system alert is open."
     case .staleElement:
       return "The element is no longer on screen."
+    case .refused(let detail):
+      return "The device refused the command: \(detail)"
     }
   }
 }
@@ -190,7 +198,7 @@ extension AppiumAutomationError: CaptureLinkError {
     switch self {
     case .commandFailed, .malformedResponse:
       return true
-    case .invalidConfiguration, .noSuchAlert, .staleElement:
+    case .invalidConfiguration, .noSuchAlert, .staleElement, .refused:
       return false
     }
   }
@@ -372,6 +380,10 @@ public actor AppiumSession: AppAutomationSession {
     }
   }
 
+  public func tapSystemAlertButton(_ label: String) async throws {
+    _ = try await execute("mobile: alert", arguments: ["action": "accept", "buttonLabel": label])
+  }
+
   public func close() async {
     await invalidateCurrentSession()
   }
@@ -548,7 +560,7 @@ public actor AppiumSession: AppAutomationSession {
     }
 
     guard
-      let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+      let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     else {
       throw AppiumAutomationError.malformedResponse("response body is not a JSON object")
     }
@@ -557,14 +569,18 @@ public actor AppiumSession: AppAutomationSession {
     if let errorValue = value as? [String: Any],
       let errorName = errorValue["error"] as? String
     {
+      let message = errorValue["message"] as? String ?? errorName
       switch errorName {
       case "no such alert":
         throw AppiumAutomationError.noSuchAlert
       case "stale element reference":
         throw AppiumAutomationError.staleElement
-      default:
-        let message = errorValue["message"] as? String ?? errorName
+      // Appium answers with these when it cannot reach WebDriverAgent, when
+      // the session is gone, or when the device stops answering.
+      case "invalid session id", "session not created", "unknown error", "timeout":
         throw AppiumAutomationError.commandFailed(message)
+      default:
+        throw AppiumAutomationError.refused("\(errorName): \(message)")
       }
     }
     if !(200..<300).contains(httpResponse.statusCode) {

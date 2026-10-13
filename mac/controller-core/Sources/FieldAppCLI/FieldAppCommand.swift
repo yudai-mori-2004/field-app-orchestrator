@@ -48,7 +48,10 @@ struct FieldAppCommand {
     try definition.validate()
 
     if operation.isValidationOnly {
-      print("Valid definition: \(definition.displayName) [\(definition.identifier)]")
+      print(
+        "Valid definition: \(definition.displayName) [\(definition.identifier)]"
+          + " (afterRecording: \(definition.afterRecording.rawValue))"
+      )
       return
     }
 
@@ -61,6 +64,7 @@ struct FieldAppCommand {
     let serverURL = try appiumURL(from: environment)
     let wdaLocalPort = try port(from: environment)
     let deviceLabel = environment["FAO_DEVICE_LABEL"] ?? "wda-\(wdaLocalPort)"
+    let batteryStopPercent = try batteryStopPercent(from: environment)
     let deviceConfiguration = try AppiumDeviceConfiguration(
       serverURL: serverURL,
       deviceID: deviceID,
@@ -69,12 +73,18 @@ struct FieldAppCommand {
       wdaLocalPort: wdaLocalPort
     )
 
-    print("Connecting \(definition.displayName) to \(deviceLabel)...")
+    // Saving submits recordings, so the policy is shown at every start.
+    print(
+      "Connecting \(definition.displayName) to \(deviceLabel)"
+        + " (afterRecording: \(definition.afterRecording.rawValue),"
+        + " pause at \(batteryStopPercent)% battery)..."
+    )
     let session = try await AppiumSession.start(configuration: deviceConfiguration)
     let adapter = try OperationDefinitionAdapter(session: session, definition: definition)
     let worker = DeviceWorker(deviceID: deviceLabel, adapter: adapter) { event in
       if let line = eventDescription(event) {
-        print("\(timestamp()) \(line)")
+        // Alert texts carry a title and a message on separate lines.
+        print("\(timestamp()) \(line.replacingOccurrences(of: "\n", with: " / "))")
       }
     }
     let doorbell = Doorbell()
@@ -85,7 +95,7 @@ struct FieldAppCommand {
       }
     }
     let batteryTask = Task {
-      var batteryGuard = BatteryGuard(threshold: 0.10)
+      var batteryGuard = BatteryGuard(threshold: Double(batteryStopPercent) / 100)
       while !Task.isCancelled {
         if let battery = try? await session.batteryState(),
           batteryGuard.shouldPause(for: battery),
@@ -278,6 +288,18 @@ struct FieldAppCommand {
     return url
   }
 
+  /// The battery level, in percent, at which a device that is not charging
+  /// is paused.
+  private static func batteryStopPercent(from environment: [String: String]) throws -> Int {
+    let rawValue = environment["FAO_BATTERY_STOP_PERCENT"] ?? "10"
+    guard let value = Int(rawValue), (1...50).contains(value) else {
+      throw FieldAppCLIError.invalidEnvironment(
+        "FAO_BATTERY_STOP_PERCENT must be between 1 and 50."
+      )
+    }
+    return value
+  }
+
   private static func port(from environment: [String: String]) throws -> Int {
     let rawValue = environment["FAO_WDA_LOCAL_PORT"] ?? "8100"
     guard let value = Int(rawValue), (1024...64535).contains(value) else {
@@ -299,7 +321,7 @@ struct FieldAppCommand {
     case .observed(let observation):
       return "screen \(observationDescription(observation))"
     case .performing(let action):
-      return "tap \(action.identifier) (\(action.impact.rawValue))"
+      return "step \(action.identifier) (\(action.impact.rawValue))"
     case .phaseChanged(.transitioning):
       return nil
     case .phaseChanged(let phase):
@@ -316,6 +338,10 @@ struct FieldAppCommand {
     switch observation {
     case .state(let state):
       return state
+    case .systemAlert(let text):
+      return "system alert (\(text))"
+    case .locked:
+      return "locked"
     case .outsideApp(let bundleIdentifier):
       return "outside the app (\(bundleIdentifier ?? "no app in front"))"
     case .unknown(let detail):
@@ -332,7 +358,7 @@ struct FieldAppCommand {
     case .waitingForApp:
       return "waiting for the app"
     case .transitioning(let action):
-      return "tapping \(action.identifier)"
+      return "running \(action.identifier)"
     case .reconnecting(let detail):
       return "reconnecting: \(detail)"
     case .needsAttention(let detail):

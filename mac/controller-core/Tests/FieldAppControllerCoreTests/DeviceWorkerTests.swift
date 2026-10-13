@@ -60,7 +60,14 @@ private actor InMemoryCaptureAdapter: CaptureAppAdapter {
     toward desiredState: DesiredCaptureState,
     from observation: CaptureObservation
   ) async throws -> CaptureStep {
-    guard case .state(let screen) = observation else {
+    let screen: String
+    switch observation {
+    case .state(let state):
+      screen = state
+    case .unknown(let detail):
+      return .needsAttention(detail)
+    case .systemAlert, .locked, .outsideApp:
+      // This adapter's screens never leave the app.
       return .settled
     }
     switch (desiredState, screen) {

@@ -21,6 +21,7 @@ private actor FakeMinuteApp: AppAutomationSession {
     case card(Int)
     case armed(Int)
     case countdown(Int)
+    case cancelCountdownDialog(Int)
     case recording(Int)
     case tooShortDialog(Int)
     case timeLimitDialog(Int)
@@ -201,6 +202,8 @@ private actor FakeMinuteApp: AppAutomationSession {
   func isHittable(_ element: AutomationElement) async throws -> Bool {
     guard !unknownDialog else { return false }
     switch screen {
+    case .cancelCountdownDialog:
+      return !["record-pending", "record-cancel", "record-screen"].contains(element.name)
     case .tooShortDialog:
       return !["record-stop", "record-screen"].contains(element.name)
     case .timeLimitDialog, .saveDialog, .discardDialog:
@@ -245,7 +248,13 @@ private actor FakeMinuteApp: AppAutomationSession {
     case (.armed(let task), "record-arm"):
       screen = .countdown(task)
     case (.countdown(let task), "record-cancel"):
-      screen = .armed(task)
+      screen = .cancelCountdownDialog(task)
+    case (.cancelCountdownDialog(let task), "Keep going")
+    where element.type == "XCUIElementTypeOther":
+      screen = .countdown(task)
+    case (.cancelCountdownDialog(let task), "Yes, cancel")
+    where element.type == "XCUIElementTypeOther":
+      screen = .card(task)
     case (.recording(let task), "record-stop"):
       screen = clipIsShort ? .tooShortDialog(task) : .review(task)
     case (.tooShortDialog, "OK") where element.type == "XCUIElementTypeOther":
@@ -409,6 +418,14 @@ private actor FakeMinuteApp: AppAutomationSession {
       return [
         element("record-screen", "Other"), element("record-pending", "Button"),
         element("record-cancel", "Button"),
+      ]
+    case .cancelCountdownDialog:
+      return [
+        element("record-screen", "Other"), element("record-pending", "Button"),
+        element("record-cancel", "Button"), element("Cancel the recording?", "StaticText"),
+        element("Cancel the recording?", "StaticText"), element("Keep going", "Other"),
+        element("Keep going", "StaticText"), element("Yes, cancel", "Other"),
+        element("Yes, cancel", "StaticText"),
       ]
     case .recording(let task):
       return [
@@ -591,7 +608,7 @@ final class OperationDefinitionTests: XCTestCase {
     let task = FakeMinuteApp.assignedTask
     let starts: [FakeMinuteApp.Screen] = [
       .tasks, .minutes, .settings, .card(5), .card(task), .armed(task), .countdown(task),
-      .recording(task), .tooShortDialog(task), .timeLimitDialog(task), .review(task),
+      .cancelCountdownDialog(task), .recording(task), .tooShortDialog(task), .timeLimitDialog(task), .review(task),
       .saveDialog(task),
       .discardDialog(task), .saved(task),
     ]
@@ -681,6 +698,31 @@ final class OperationDefinitionTests: XCTestCase {
 
     XCTAssertEqual(snapshot.phase, .stable)
     XCTAssertEqual(snapshot.observation, .state("recording"))
+  }
+
+  /// Minute asks before it cancels a countdown, and the countdown stays
+  /// stopped under the question. Read as a countdown, the question would be
+  /// waited on for as long as it stays open.
+  func testQuestionOverACountdownIsAnsweredTowardTheCommand() async throws {
+    let task = FakeMinuteApp.assignedTask
+
+    let keptGoing = FakeMinuteApp(screen: .cancelCountdownDialog(task))
+    let recordingWorker = try MinuteDefinition.worker(for: keptGoing)
+    await recordingWorker.setDesiredState(.running)
+    _ = await settle(recordingWorker, keptGoing)
+    let screenAfterKeepingOn = await keptGoing.screen
+    let tapsToKeepOn = await keptGoing.taps
+    XCTAssertEqual(screenAfterKeepingOn, .recording(task))
+    XCTAssertEqual(tapsToKeepOn, ["Keep going"])
+
+    let cancelled = FakeMinuteApp(screen: .countdown(task))
+    let pausingWorker = try MinuteDefinition.worker(for: cancelled)
+    await pausingWorker.setDesiredState(.paused)
+    _ = await settle(pausingWorker, cancelled)
+    let screenAfterCancelling = await cancelled.screen
+    let tapsToCancel = await cancelled.taps
+    XCTAssertEqual(screenAfterCancelling, .card(task))
+    XCTAssertEqual(tapsToCancel, ["record-cancel", "Yes, cancel"])
   }
 
   func testCountdownWaitsForTheAppWithoutTapping() async throws {

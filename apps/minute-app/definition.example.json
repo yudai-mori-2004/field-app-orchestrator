@@ -17,7 +17,15 @@
       "absent": [{ "name": "REPLACE_WITH_TASK_TITLE", "type": "StaticText" }]
     },
     { "id": "armed", "present": [{ "name": "record-arm" }] },
-    { "id": "countdown", "present": [{ "name": "record-pending" }] },
+    {
+      "id": "countdown",
+      "present": [{ "name": "record-pending" }],
+      "absent": [{ "name": "Cancel the recording?", "type": "StaticText" }]
+    },
+    {
+      "id": "cancel-countdown-dialog",
+      "present": [{ "name": "Cancel the recording?", "type": "StaticText" }]
+    },
     {
       "id": "recording",
       "present": [{ "name": "record-stop" }],
@@ -95,8 +103,22 @@
       "id": "cancel-countdown",
       "from": ["countdown"],
       "tap": { "name": "record-cancel" },
-      "to": "armed",
+      "to": "cancel-countdown-dialog",
       "impact": "navigation"
+    },
+    {
+      "id": "confirm-cancel-countdown",
+      "from": ["cancel-countdown-dialog"],
+      "tap": { "name": "Yes, cancel", "type": "Other" },
+      "to": "assigned-task-card",
+      "impact": "navigation"
+    },
+    {
+      "id": "keep-countdown",
+      "from": ["cancel-countdown-dialog"],
+      "tap": { "name": "Keep going", "type": "Other" },
+      "to": "countdown",
+      "impact": "startsRecording"
     },
     {
       "id": "stop-recording",

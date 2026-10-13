@@ -84,7 +84,7 @@ iPhone 1台ごとに`field-app`を起動します。確かめるときはター�
 
 ### 1. MacとiPhoneを準備する
 
-Xcodeを入れたMacに、iPhoneを一度USBでつないで信頼し、デベロッパモードをオンにします。それからは、MacとiPhoneを同じWi-Fiにつなげば、ケーブルなしで操作できます。パスコードはオフ、自動ロックは「なし」にします。対象アプリへのログインと、必要な権限の許可も済ませておきます。詳しくは[iPhoneとMacの準備と運転](docs/operations/device-setup.md)に、工場出荷状態のiPhoneから順に進める手順は[iPhoneの初期設定](docs/operations/iphone-setup.md)にあります。
+MacにXcodeを入れ、このリポジトリを取得します。iPhoneは、一度USBでMacにつないで信頼し、デベロッパモードをオンにします。それからは、MacとiPhoneを同じWi-Fiにつなげば、ケーブルなしで操作できます。パスコードはオフ、自動ロックは「なし」にします。対象アプリへのログインと、必要な権限の許可も済ませておきます。詳しくは[iPhoneとMacの準備と運転](docs/operations/device-setup.md)に、工場出荷状態のiPhoneから順に進める手順は[iPhoneの初期設定](docs/operations/iphone-setup.md)にあります。
 
 iPhoneで動かすWebDriverAgentを、一度だけ組み立てます。
 

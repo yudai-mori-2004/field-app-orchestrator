@@ -4,7 +4,24 @@ Macの`field-app`は、iPhone上のWebDriverAgentと直接やり取りします�
 
 ## 初回セットアップ
 
-Macには、Xcodeを入れます。WebDriverAgentの組み立てと起動に`xcodebuild`を、iPhoneの宛先を調べるのに`devicectl`を使います。WebDriverAgentの署名には、有料の開発者登録のTeamを使います。
+### Mac
+
+Macは、使うiPhoneのiOSに対応するXcodeが動くものを使います。確かめた組み合わせは、macOS 26.3、Xcode 26.4、iOS 26.4.1のiPhone 12 miniです。Xcode 26.4.1はmacOS 26.2以降で動き、macOS 26が入るMac miniはM1（2020年）以降です（[AppleのXcodeの対応表](https://developer.apple.com/support/xcode/)、[macOS Tahoe 26に対応しているコンピュータ](https://support.apple.com/ja-jp/122867)）。
+
+Macごとに、一度だけ次を済ませます。
+
+1. Xcodeを入れて一度開き、iOSのプラットフォームを入れる。入れ終わるまで、iPhone向けの組み立てはできない。WebDriverAgentの組み立てと起動に`xcodebuild`を、iPhoneの宛先を調べるのに`devicectl`を使う
+2. Xcodeの設定で、有料の開発者登録のTeamに入っているApple Accountを追加する。WebDriverAgentの署名に使う
+3. このリポジトリを取得する
+
+   ```sh
+   git clone https://github.com/yudai-mori-2004/field-app-orchestrator.git
+   cd field-app-orchestrator
+   ```
+
+4. Macのローカルホスト名を、役割の名前にする。理由と変え方は[現場のネットワークとMac](#現場のネットワークとmac)にある
+
+### iPhone
 
 iPhoneごとに、一度だけ次を済ませます。工場出荷状態のiPhoneから順に進める手順は、[iPhoneの初期設定](iphone-setup.md)にあります。
 
@@ -18,7 +35,9 @@ iPhoneごとに、一度だけ次を済ませます。工場出荷状態のiPhon
 8. iOSアップデートの自動インストールをオフにする。実機で確かめたiOSのバージョンのまま使うため
 9. 開始と終了のショートカットを作り、背面タップに割り当てる。手順は[背面タップで止める・再開する](#背面タップで止める再開する)にある
 
-WebDriverAgentは、次のコマンドで組み立てます。決まった版をnpmの登録所から取得し、照合値を確かめてから組み立てます。結果はリポジトリの`.wda/`に入り、Gitには含めません。
+### WebDriverAgent
+
+WebDriverAgentは、次のコマンドで組み立てます。決まった版をnpmの登録所から取得し、照合値を確かめてから組み立てます。結果はリポジトリの`.wda/`に入り、Gitには含めません。Team IDは、Apple Developerのサイトの「メンバーシップの詳細」に出ている10文字です。
 
 ```sh
 FAO_DEVELOPMENT_TEAM=<Team ID> tools/setup_wda.sh <iPhoneのUDID>

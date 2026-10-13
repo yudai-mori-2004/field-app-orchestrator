@@ -1,6 +1,6 @@
 # Minute Dataの操作定義
 
-Minute Dataを操作するための操作定義です。画面の目印とボタンは、Minute 1.29.0で確かめた値です。
+Minute Dataを操作するための操作定義です。画面の目印とボタンは、Minute 1.29.0で確かめた値です。`Save this Minute?`などの画面の文言は、Minuteの表示が英語のときのものです。電池残量の警告の文言は、iPhoneの言語が日本語のときのものです。
 
 撮るタスクは端末ごとに決めます。例をコピーし、`REPLACE_WITH_TASK_TITLE`を、タスク一覧に出ているタスク名に置き換えます。次の例ではFood Prepにしています。
 

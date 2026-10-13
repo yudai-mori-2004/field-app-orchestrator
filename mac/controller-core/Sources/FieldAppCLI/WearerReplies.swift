@@ -21,9 +21,9 @@ actor WearerReplies {
       unresolvedAttention = 0
       switch goal {
       case .running:
-        return "録画を始めました。"
+        return "撮影を開始しました。"
       case .paused:
-        return "録画を止めました。"
+        return "撮影を終了しました。"
       }
     case .needsAttention:
       unresolvedAttention += 1
@@ -36,9 +36,9 @@ actor WearerReplies {
     case .reconnecting:
       switch goal {
       case .running:
-        return "iPhoneがMacにつながっていません。つながったら録画を始めます。"
+        return "iPhoneがMacにつながっていません。つながったら撮影を開始します。"
       case .paused:
-        return "iPhoneがMacにつながっていません。つながったら止めます。録画中なら、それまで録画は続きます。"
+        return "iPhoneがMacにつながっていません。つながったら撮影を終了します。撮影中なら、それまで撮影は続きます。"
       }
     case .stopped:
       return "Macのプログラムが終了しています。担当者に連絡してください。"
@@ -47,12 +47,14 @@ actor WearerReplies {
     }
   }
 
+  /// Asks for another tap later. This reply cannot carry the result, and
+  /// the next tap is answered with what the device shows by then.
   private func underWay(toward goal: DesiredCaptureState) -> String {
     switch goal {
     case .running:
-      return "録画の準備をしています。このまま待ってください。"
+      return "撮影の準備に時間がかかっています。少ししてから、もう一度たたいてください。"
     case .paused:
-      return "止めているところです。このまま待ってください。"
+      return "撮影の終了に時間がかかっています。少ししてから、もう一度たたいてください。"
     }
   }
 }

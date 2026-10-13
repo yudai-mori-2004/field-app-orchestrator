@@ -11,13 +11,11 @@ swift run --package-path mac/controller-core field-app \
   --validate-definition config/local/claru.json
 ```
 
-起動するときは、端末ごとに`FAO_DEVICE_LABEL`と`FAO_WDA_LOCAL_PORT`を変えます。
+起動するときは、端末ごとに`FAO_DEVICE_ID`と`FAO_DEVICE_LABEL`を変えます。`caffeinate -i`は、動いている間Macをスリープさせません。
 
 ```sh
 FAO_DEVICE_ID=<IPHONE_UDID> \
-FAO_DEVELOPMENT_TEAM=<TEAM_ID> \
 FAO_DEVICE_LABEL=claru-01 \
-FAO_WDA_LOCAL_PORT=8200 \
-swift run --package-path mac/controller-core field-app \
+caffeinate -i swift run --package-path mac/controller-core field-app \
   --definition config/local/claru.json
 ```

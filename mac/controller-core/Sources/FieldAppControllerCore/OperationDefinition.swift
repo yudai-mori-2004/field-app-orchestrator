@@ -496,22 +496,45 @@ public struct OperationDefinitionAdapter: CaptureAppAdapter {
   }
 
   public func observe(after previous: CaptureObservation?) async throws -> CaptureObservation {
-    var latest = try await readState()
-    if latest == previous {
+    try await onCurrentScreen {
+      var latest = try await readState()
+      if latest == previous {
+        return latest
+      }
+      for _ in 0..<settleReads {
+        try await Task.sleep(nanoseconds: pollNanoseconds)
+        let current = try await readState()
+        if current == latest {
+          return current
+        }
+        latest = current
+      }
       return latest
     }
-    for _ in 0..<settleReads {
-      try await Task.sleep(nanoseconds: pollNanoseconds)
-      let current = try await readState()
-      if current == latest {
-        return current
-      }
-      latest = current
-    }
-    return latest
   }
 
   public func nextStep(
+    toward desiredState: DesiredCaptureState,
+    from observation: CaptureObservation
+  ) async throws -> CaptureStep {
+    try await onCurrentScreen { try await plan(toward: desiredState, from: observation) }
+  }
+
+  public func perform(_ action: CaptureAction, from observation: CaptureObservation) async throws {
+    try await onCurrentScreen { try await carryOut(action, from: observation) }
+  }
+
+  /// An element that leaves the screen while it is read or tapped means the
+  /// app moved on, so the worker observes again.
+  private func onCurrentScreen<Value>(_ body: () async throws -> Value) async throws -> Value {
+    do {
+      return try await body()
+    } catch AutomationError.staleElement {
+      throw ScreenMovedOn()
+    }
+  }
+
+  private func plan(
     toward desiredState: DesiredCaptureState,
     from observation: CaptureObservation
   ) async throws -> CaptureStep {
@@ -541,7 +564,7 @@ public struct OperationDefinitionAdapter: CaptureAppAdapter {
     }
   }
 
-  public func perform(_ action: CaptureAction, from observation: CaptureObservation) async throws {
+  private func carryOut(_ action: CaptureAction, from observation: CaptureObservation) async throws {
     guard let move = moves[action] else {
       throw OperationDefinitionError.unsupportedAction(action.identifier)
     }
@@ -619,18 +642,14 @@ public struct OperationDefinitionAdapter: CaptureAppAdapter {
     if let alert = try await session.systemAlertText() {
       throw TargetCovered(action: action.id, cover: "the alert \"\(alert)\"")
     }
-    do {
-      let target = try await locate(action)
-      try await session.tap(try await reachable(target, for: action))
-    } catch AppiumAutomationError.staleElement {
-      throw ScreenMovedOn()
-    }
+    let target = try await locate(action)
+    try await session.tap(try await reachable(target, for: action))
   }
 
   private func close(_ alert: DefinitionSystemAlert) async throws {
     do {
       try await session.tapSystemAlertButton(alert.button)
-    } catch AppiumAutomationError.noSuchAlert {
+    } catch AutomationError.noSuchAlert {
       throw ScreenMovedOn()
     }
   }

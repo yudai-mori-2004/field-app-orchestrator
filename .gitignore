@@ -8,6 +8,7 @@ __pycache__/
 graphify-out/
 node_modules/
 .appium/
+.wda/
 
 # Apple and Xcode
 DerivedData/

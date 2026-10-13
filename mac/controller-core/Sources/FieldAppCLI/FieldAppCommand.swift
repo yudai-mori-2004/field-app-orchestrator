@@ -57,20 +57,12 @@ struct FieldAppCommand {
 
     let environment = ProcessInfo.processInfo.environment
     let deviceID = try requiredEnvironment("FAO_DEVICE_ID", from: environment)
-    let developmentTeam = try requiredEnvironment(
-      "FAO_DEVELOPMENT_TEAM",
-      from: environment
-    )
-    let serverURL = try appiumURL(from: environment)
-    let wdaLocalPort = try port(from: environment)
-    let deviceLabel = environment["FAO_DEVICE_LABEL"] ?? "wda-\(wdaLocalPort)"
-    let batteryStopPercent = try batteryStopPercent(from: environment)
-    let deviceConfiguration = try AppiumDeviceConfiguration(
-      serverURL: serverURL,
+    let deviceLabel = environment["FAO_DEVICE_LABEL"] ?? deviceID
+    let batteryStopPercent = try Self.batteryStopPercent(from: environment)
+    let agentConfiguration = try WebDriverAgentConfiguration(
       deviceID: deviceID,
-      developmentTeam: developmentTeam,
       bundleIdentifier: definition.bundleIdentifier,
-      wdaLocalPort: wdaLocalPort
+      xctestrun: agentTestRun(from: environment)
     )
 
     // Saving submits recordings, so the policy is shown at every start.
@@ -79,7 +71,10 @@ struct FieldAppCommand {
         + " (afterRecording: \(definition.afterRecording.rawValue),"
         + " pause at \(batteryStopPercent)% battery)..."
     )
-    let session = try await AppiumSession.start(configuration: deviceConfiguration)
+    let session = WebDriverAgentSession(
+      configuration: agentConfiguration,
+      host: XcodeWebDriverAgentHost(configuration: agentConfiguration)
+    )
     let adapter = try OperationDefinitionAdapter(session: session, definition: definition)
     let worker = DeviceWorker(deviceID: deviceLabel, adapter: adapter) { event in
       if let line = eventDescription(event) {
@@ -174,7 +169,7 @@ struct FieldAppCommand {
     worker: DeviceWorker,
     pollingTask: Task<Void, Never>,
     doorbell: Doorbell,
-    session: AppiumSession
+    session: WebDriverAgentSession
   ) async throws {
     // Cancelling polling first would cut off a tap that is already on its way.
     let finalSnapshot = await worker.pauseAndStop()
@@ -280,14 +275,6 @@ struct FieldAppCommand {
     return value
   }
 
-  private static func appiumURL(from environment: [String: String]) throws -> URL {
-    let rawValue = environment["FAO_APPIUM_URL"] ?? "http://127.0.0.1:4723/"
-    guard let url = URL(string: rawValue), url.scheme == "http" || url.scheme == "https" else {
-      throw FieldAppCLIError.invalidEnvironment("FAO_APPIUM_URL must be an HTTP URL.")
-    }
-    return url
-  }
-
   /// The battery level, in percent, at which a device that is not charging
   /// is paused.
   private static func batteryStopPercent(from environment: [String: String]) throws -> Int {
@@ -300,14 +287,22 @@ struct FieldAppCommand {
     return value
   }
 
-  private static func port(from environment: [String: String]) throws -> Int {
-    let rawValue = environment["FAO_WDA_LOCAL_PORT"] ?? "8100"
-    guard let value = Int(rawValue), (1024...64535).contains(value) else {
+  /// The WebDriverAgent build from `tools/setup_wda.sh`, unless
+  /// FAO_WDA_XCTESTRUN names another one.
+  private static func agentTestRun(from environment: [String: String]) throws -> URL {
+    if let path = environment["FAO_WDA_XCTESTRUN"] {
+      return URL(fileURLWithPath: path)
+    }
+    let products = URL(fileURLWithPath: ".wda/Build/Products", isDirectory: true)
+    let testRuns =
+      (try? FileManager.default.contentsOfDirectory(at: products, includingPropertiesForKeys: nil))?
+      .filter { $0.pathExtension == "xctestrun" } ?? []
+    guard testRuns.count == 1, let testRun = testRuns.first else {
       throw FieldAppCLIError.invalidEnvironment(
-        "FAO_WDA_LOCAL_PORT must be between 1024 and 64535."
+        "Build WebDriverAgent with tools/setup_wda.sh, or set FAO_WDA_XCTESTRUN."
       )
     }
-    return value
+    return testRun
   }
 
   private static func timestamp() -> String {

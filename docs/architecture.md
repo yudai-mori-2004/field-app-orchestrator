@@ -2,15 +2,17 @@
 
 ## 構成
 
-Mac上では、iPhoneごとに一つの`field-app`プロセスを起動します。各プロセスは、そのiPhoneのAppiumセッション、Device Worker、アプリ別操作定義を一つずつ持ちます。
+Mac上では、iPhoneごとに一つの`field-app`プロセスを起動します。各プロセスは、そのiPhoneのWebDriverAgentとのセッション、Device Worker、アプリ別操作定義を一つずつ持ちます。WebDriverAgentは、iPhone上で画面の部品を読んで押すアプリで、`field-app`が`xcodebuild`で起動し、ネットワーク越しに直接話しかけます。
 
 ```mermaid
 flowchart LR
   input[開始・止める・終了] --> worker[DeviceWorker]
   worker --> adapter[OperationDefinitionAdapter]
   definition[アプリ別操作定義 JSON] --> adapter
-  adapter --> session[AppiumSession]
+  adapter --> session[WebDriverAgentSession]
   session --> wda[iPhone上のWebDriverAgent]
+  session -. 止まっていれば起動 .-> host[xcodebuild]
+  host -.-> wda
   wda --> app[MinuteまたはClaru]
 ```
 
@@ -79,7 +81,9 @@ Device Workerは、次の流れを繰り返します。
 
 ## 接続が切れたとき
 
-Appiumに届かない、AppiumがWebDriverAgentにつながらない、セッションがなくなった、という失敗では、そのセッションを捨て、10秒おきに作り直します。その間は`reconnecting`となり、人を待ちません。Wi-FiやUSBの切断、Appiumの停止、WebDriverAgentRunnerの終了、音量ボタンの同時押しによる自動操作の中断は、どれもこの扱いです。対象アプリはMacと関係なく録画を続けます。
+WebDriverAgentに届かない、セッションがなくなった、という失敗では、そのセッションを捨て、10秒おきに作り直します。その間は`reconnecting`となり、人を待ちません。Wi-Fiの切断、WebDriverAgentの終了、音量ボタンの同時押しによる自動操作の中断は、どれもこの扱いです。対象アプリはMacと関係なく録画を続けます。
+
+作り直すときは、まず`devicectl`でiPhoneの宛先を調べます。iPhoneに届かない間（Wi-Fiの外にいるときなど）は、そのまま待ちます。iPhoneに届くのにWebDriverAgentが返事をしないときだけ、`xcodebuild`でWebDriverAgentを起動し直します。届かない間に起動し直しても失敗するだけで、iPhoneが戻ったときにWebDriverAgentが動いていれば、そのまま使えるからです。3回起動しても返事がなければ、署名の期限切れなどとみなし、Xcodeの出力を表示して人を待ちます。
 
 iPhoneからの返事のうち、部品がもう画面にない、警告が開いていない、というものは、セッションが動いている証拠なので、セッションを捨てずに画面を読み直します。それ以外の断りの返事（押すはずのボタンがないなど）も接続の失敗ではありません。つなぎ直しても同じ返事が続くだけなので、人を待ちます。
 
@@ -89,11 +93,13 @@ iPhoneからの返事のうち、部品がもう画面にない、警告が開�
 
 `quit`、入力の終わり、Ctrl-C、終了要求、ターミナルを閉じたときは、どれも同じ終了の流れに入ります。目標を`paused`にし、送信済みの操作が終わるのを待ってから、止めた状態まで進めて終わります。`needsAttention`のときやつながっていないときはタップせずに終わり、止めた状態を確かめられなかったことを表示して終了コード1を返します。
 
-## Appiumとの接続
+## WebDriverAgentとの接続
 
-- セッションに対象アプリを指定しない。接続を作るときも終えるときもアプリを起動し直さないので、録画中に接続を作り直しても撮影が途切れない。WebDriverAgentは画面の中央にあるアプリを読む。対象アプリを指定すると、コントロールセンターが開いていても下のアプリを読み、部品を押せるものとして返すので、タップがコントロールセンターに当たる
+- iPhoneの宛先は、XcodeがiPhoneへ保っている経路のアドレスで、`devicectl`で調べる。Wi-FiでもUSBでも同じ形で届き、IPアドレスを固定しなくてよい。どのiPhoneのWebDriverAgentも同じポートで待ち受ける
+- WebDriverAgentは`field-app`を終えても動き続け、次に起動した`field-app`がそのまま使う。接続を作るときも終えるときもアプリを起動し直さないので、録画中に`field-app`を起動し直しても撮影が途切れない
+- セッションに対象アプリを指定しない。WebDriverAgentは画面の中央にあるアプリを読む。対象アプリを指定すると、コントロールセンターが開いていても下のアプリを読み、部品を押せるものとして返すので、タップがコントロールセンターに当たる
 - アプリが落ち着くのを待つWebDriverAgentの機能を切る。撮影アプリは常に画面を動かしているため、待つと1タップに20秒かかる。画面が落ち着いたかは、上の読み取りで判断する
-- 端末ごとにWebDriverAgentのポートとビルドの置き場所を分ける
+- WebDriverAgentは、`tools/setup_wda.sh`で一度だけ組み立てる。版と照合値はスクリプトで固定している
 
 ## 複数台の管理
 
@@ -112,4 +118,4 @@ AIエージェントは制御ループの外側に置きます。アプリの更
 
 開発中はSwift Packageの`field-app`実行ファイルを使用します。二台同時運転、Wi-Fi切断からの復旧、8時間連続運転を確認した後、同じ実行器を署名・公証したMacアプリへ包みます。
 
-MacアプリのDeveloper ID署名と、iPhone上のWebDriverAgentに必要なApple Development署名は別に管理します。端末UDIDとTeam IDは実行時の環境変数で、撮るタスクはローカルの操作定義で与えます。
+MacアプリのDeveloper ID署名と、iPhone上のWebDriverAgentに必要なApple Development署名は別に管理します。Team IDはWebDriverAgentを組み立てるときに、端末UDIDは実行時の環境変数で、撮るタスクはローカルの操作定義で与えます。

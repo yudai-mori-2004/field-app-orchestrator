@@ -64,6 +64,7 @@ private actor FakeMinuteApp: AppAutomationSession {
   private var appBeforeActivation: String?
   private var pendingMove: (afterReads: Int, screen: Screen)?
   private var moveBeforeNextTap: Screen?
+  private var elementLeavesDuringNextRead = false
   private var hasPasscode = false
   private var tapsWithLostAnswers: Set<String> = []
   private let clipIsShort: Bool
@@ -91,7 +92,7 @@ private actor FakeMinuteApp: AppAutomationSession {
   private func failIfLinkIsDown() throws {
     if failingCalls > 0 {
       failingCalls -= 1
-      throw AppiumAutomationError.commandFailed("the link to the device is down")
+      throw AutomationError.commandFailed("the link to the device is down")
     }
   }
 
@@ -103,6 +104,12 @@ private actor FakeMinuteApp: AppAutomationSession {
   /// a screen can still show a button for a moment while it is torn down.
   func moveOn(afterReads count: Int, to screen: Screen) {
     pendingMove = (reads + count, screen)
+  }
+
+  /// An element leaves the screen while the next read collects it, which
+  /// WebDriverAgent answers as for a tap on such an element.
+  func loseElementDuringNextRead() {
+    elementLeavesDuringNextRead = true
   }
 
   /// The app moves to `screen` after a button was found and before it is
@@ -167,6 +174,10 @@ private actor FakeMinuteApp: AppAutomationSession {
 
   func elements(matching selectors: [ElementSelector]) async throws -> [AutomationElement] {
     try failIfLinkIsDown()
+    if elementLeavesDuringNextRead {
+      elementLeavesDuringNextRead = false
+      throw AutomationError.staleElement
+    }
     openPendingAlert()
     if let pendingMove, reads >= pendingMove.afterReads {
       screen = pendingMove.screen
@@ -208,7 +219,7 @@ private actor FakeMinuteApp: AppAutomationSession {
     // WebDriverAgent answers a tap on an element that has left the screen
     // with this error.
     guard renderedElements().contains(element) else {
-      throw AppiumAutomationError.staleElement
+      throw AutomationError.staleElement
     }
     guard try await isHittable(element) else {
       throw FakeAppError.covered(element.name)
@@ -265,7 +276,7 @@ private actor FakeMinuteApp: AppAutomationSession {
       throw FakeAppError.unexpectedTap(element.name)
     }
     if tapsWithLostAnswers.remove(element.name) != nil {
-      throw AppiumAutomationError.commandFailed("the answer to the tap was lost")
+      throw AutomationError.commandFailed("the answer to the tap was lost")
     }
   }
 
@@ -305,7 +316,7 @@ private actor FakeMinuteApp: AppAutomationSession {
 
   func unlock() async throws {
     guard !hasPasscode else {
-      throw AppiumAutomationError.commandFailed("Timed out while waiting until the screen gets unlocked")
+      throw AutomationError.commandFailed("Timed out while waiting until the screen gets unlocked")
     }
     locked = false
   }
@@ -320,7 +331,7 @@ private actor FakeMinuteApp: AppAutomationSession {
 
   func activateApp() async throws {
     guard !locked else {
-      throw AppiumAutomationError.commandFailed("the device is locked")
+      throw AutomationError.commandFailed("the device is locked")
     }
     if frontmost != Self.bundleIdentifier {
       appBeforeActivation = frontmost
@@ -335,11 +346,11 @@ private actor FakeMinuteApp: AppAutomationSession {
 
   func tapSystemAlertButton(_ label: String) async throws {
     guard let alert else {
-      throw AppiumAutomationError.noSuchAlert
+      throw AutomationError.noSuchAlert
     }
     // WebDriverAgent refuses a label the alert does not have.
     guard alert.buttons.contains(label) else {
-      throw AppiumAutomationError.refused(
+      throw AutomationError.refused(
         "invalid element state: Failed to find button with label '\(label)'"
       )
     }
@@ -654,6 +665,22 @@ final class OperationDefinitionTests: XCTestCase {
     let taps = await app.taps
     XCTAssertEqual(snapshot.phase, .stable)
     XCTAssertEqual(taps, ["record-cancel"])
+  }
+
+  func testElementLeavingDuringAReadLeadsToAnotherRead() async throws {
+    let task = FakeMinuteApp.assignedTask
+    let app = FakeMinuteApp(screen: .countdown(task))
+    let worker = try MinuteDefinition.worker(for: app)
+    await worker.setDesiredState(.running)
+    _ = await worker.reconcileUntilStable()
+    // The countdown ends while the screen is being read.
+    await app.finishCountdown()
+    await app.loseElementDuringNextRead()
+
+    let snapshot = await worker.reconcileUntilStable()
+
+    XCTAssertEqual(snapshot.phase, .stable)
+    XCTAssertEqual(snapshot.observation, .state("recording"))
   }
 
   func testCountdownWaitsForTheAppWithoutTapping() async throws {

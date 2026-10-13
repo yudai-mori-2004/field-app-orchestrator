@@ -40,6 +40,11 @@ public enum CaptureStep: Sendable, Equatable {
 /// button that disappeared before the tap. The worker observes again.
 public protocol CaptureStaleStepError: Error {}
 
+/// A step whose button something the definition does not describe covers,
+/// such as a sheet the app opened over it. While the screen stays as it was,
+/// the worker handles it as an unknown screen.
+public protocol CaptureCoveredStepError: Error {}
+
 /// An error from the link to the device rather than from the app. The worker
 /// keeps observing after one, because the link may come back.
 public protocol CaptureLinkError: Error {
@@ -55,6 +60,15 @@ public protocol CaptureAppAdapter: Sendable {
     from observation: CaptureObservation
   ) async throws -> CaptureStep
   func perform(_ action: CaptureAction, from observation: CaptureObservation) async throws
+  /// A way back to known ground from an unknown screen, such as restarting
+  /// the app. Nil when only a person can help.
+  func recovery(from observation: CaptureObservation) async throws -> CaptureAction?
+}
+
+extension CaptureAppAdapter {
+  public func recovery(from observation: CaptureObservation) async throws -> CaptureAction? {
+    nil
+  }
 }
 
 public enum DeviceWorkerPhase: Sendable, Equatable {
@@ -234,6 +248,10 @@ public actor DeviceWorker {
   private func reconcile(maxTransitions: Int) async -> DeviceWorkerSnapshot {
     var target = desiredState
     var observationsTowardTarget = 0
+    // One recovery per pass: a screen that is still unknown afterwards needs
+    // a person.
+    var mayRecover = true
+    var coveredStep: (observation: CaptureObservation, detail: String)?
     while observationsTowardTarget < maxTransitions {
       guard !shouldStop else {
         phase = .stopped
@@ -241,7 +259,13 @@ public actor DeviceWorker {
       }
 
       do {
-        let current = try await adapter.observe(after: observation)
+        var current = try await adapter.observe(after: observation)
+        // The state still matches under whatever covers its button, so the
+        // screen as a whole is one the definition does not describe.
+        if let coveredStep, coveredStep.observation == current {
+          current = .unknown(coveredStep.detail)
+        }
+        coveredStep = nil
         observation = current
         // Starting the worker must not change what the device is doing; a
         // recording in progress continues until someone asks for a state.
@@ -253,7 +277,15 @@ public actor DeviceWorker {
           return snapshot()
         }
         if case .unknown(let detail) = current {
-          phase = .needsAttention("Unknown screen: \(detail)")
+          if mayRecover, let recovery = try await adapter.recovery(from: current) {
+            mayRecover = false
+            observationsTowardTarget += 1
+            phase = .transitioning(recovery)
+            onEvent?(.performing(recovery))
+            try await adapter.perform(recovery, from: current)
+            continue
+          }
+          phase = .needsAttention(detail)
           return snapshot()
         }
 
@@ -274,13 +306,16 @@ public actor DeviceWorker {
         case .perform(let action):
           phase = .transitioning(action)
           onEvent?(.performing(action))
-          try await adapter.perform(action, from: current)
+          do {
+            try await adapter.perform(action, from: current)
+          } catch let error as CaptureCoveredStepError {
+            coveredStep = (current, Self.describe(error))
+          }
         }
       } catch is CaptureStaleStepError {
         continue
       } catch {
-        let description =
-          (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+        let description = Self.describe(error)
         // A lost link says nothing about the app, and a tap whose answer was
         // lost may or may not have landed. Either way the next step is
         // planned from a fresh observation once the link is back.
@@ -299,5 +334,9 @@ public actor DeviceWorker {
     phase = .needsAttention(
       "The app did not reach the requested state within the transition limit.")
     return snapshot()
+  }
+
+  private static func describe(_ error: any Error) -> String {
+    (error as? LocalizedError)?.errorDescription ?? String(describing: error)
   }
 }

@@ -4,7 +4,6 @@ import XCTest
 @testable import FieldAppControllerCore
 
 private enum FakeAppError: Error {
-  case notOnScreen(String)
   case covered(String)
   case unexpectedTap(String)
 }
@@ -12,7 +11,8 @@ private enum FakeAppError: Error {
 /// Mirrors the Minute screens observed on a device: duplicated static texts,
 /// buttons that stay in the tree but stop being hittable under a dialog, a
 /// task list that only renders cards near the visible area, and taps the app
-/// sometimes drops.
+/// sometimes drops. Like the session, it reads only what is in front at the
+/// center of the screen, so a system alert hides the app.
 private actor FakeMinuteApp: AppAutomationSession {
   enum Screen: Equatable {
     case tasks
@@ -49,6 +49,8 @@ private actor FakeMinuteApp: AppAutomationSession {
   private(set) var saved = 0
   private(set) var discarded = 0
   private(set) var drags = 0
+  private(set) var relaunches = 0
+  private var screenAfterLaunch = Screen.tasks
   private(set) var reads = 0
   private var firstRenderedCard = 0
   private var listSettlingAtTop = false
@@ -57,7 +59,9 @@ private actor FakeMinuteApp: AppAutomationSession {
   private var droppedTaps: Set<String> = []
   private var failingCalls = 0
   private var locked = false
+  private var appBeforeActivation: String?
   private var pendingMove: (afterReads: Int, screen: Screen)?
+  private var moveBeforeNextTap: Screen?
   private var hasPasscode = false
   private var tapsWithLostAnswers: Set<String> = []
   private let clipIsShort: Bool
@@ -97,6 +101,18 @@ private actor FakeMinuteApp: AppAutomationSession {
   /// a screen can still show a button for a moment while it is torn down.
   func moveOn(afterReads count: Int, to screen: Screen) {
     pendingMove = (reads + count, screen)
+  }
+
+  /// The app moves to `screen` after a button was found and before it is
+  /// tapped.
+  func moveOn(beforeNextTapTo screen: Screen) {
+    moveBeforeNextTap = screen
+  }
+
+  /// What the app shows after a restart, for an app that keeps opening on a
+  /// screen the definition does not know, such as a login page.
+  func launchesInto(_ screen: Screen) {
+    screenAfterLaunch = screen
   }
 
   func lock(withPasscode: Bool = false) {
@@ -163,8 +179,14 @@ private actor FakeMinuteApp: AppAutomationSession {
 
   func tap(_ element: AutomationElement) async throws {
     try failIfLinkIsDown()
+    if let moveBeforeNextTap {
+      screen = moveBeforeNextTap
+      self.moveBeforeNextTap = nil
+    }
+    // WebDriverAgent answers a tap on an element that has left the screen
+    // with this error.
     guard renderedElements().contains(element) else {
-      throw FakeAppError.notOnScreen(element.name)
+      throw AppiumAutomationError.staleElement
     }
     guard try await isHittable(element) else {
       throw FakeAppError.covered(element.name)
@@ -238,13 +260,19 @@ private actor FakeMinuteApp: AppAutomationSession {
     )
   }
 
-  func scrollToTop() async throws {
+  func scrollToTop(atX x: Double) async throws {
+    // After a switch from another app, the left end of the status bar is the
+    // link back to that app.
+    if x < 100, let appBeforeActivation {
+      frontmost = appBeforeActivation
+      return
+    }
     firstRenderedCard = 0
     listSettlingAtTop = true
   }
 
   func frontmostBundleIdentifier() async throws -> String? {
-    locked ? "com.apple.springboard" : frontmost
+    locked || alert != nil ? "com.apple.springboard" : frontmost
   }
 
   func isLocked() async throws -> Bool {
@@ -258,9 +286,20 @@ private actor FakeMinuteApp: AppAutomationSession {
     locked = false
   }
 
+  func terminateApp() async throws {
+    relaunches += 1
+    screen = screenAfterLaunch
+    unknownDialog = false
+    firstRenderedCard = 0
+    frontmost = "com.apple.springboard"
+  }
+
   func activateApp() async throws {
     guard !locked else {
       throw AppiumAutomationError.commandFailed("the device is locked")
+    }
+    if frontmost != Self.bundleIdentifier {
+      appBeforeActivation = frontmost
     }
     frontmost = Self.bundleIdentifier
   }
@@ -276,7 +315,7 @@ private actor FakeMinuteApp: AppAutomationSession {
   }
 
   private func renderedElements() -> [AutomationElement] {
-    guard frontmost == Self.bundleIdentifier, !locked else { return [] }
+    guard frontmost == Self.bundleIdentifier, !locked, alert == nil else { return [] }
 
     func element(_ name: String, _ type: String, label: String? = nil) -> AutomationElement {
       AutomationElement(
@@ -598,7 +637,27 @@ final class OperationDefinitionTests: XCTestCase {
     XCTAssertEqual(screen, .card(task))
   }
 
-  func testElementCoveredByAnUnknownDialogIsNotTapped() async throws {
+  func testButtonThatLeftTheScreenDuringTheTapLeadsToANewPlan() async throws {
+    let task = FakeMinuteApp.assignedTask
+    let app = FakeMinuteApp(screen: .recording(task))
+    let worker = try MinuteDefinition.worker(for: app)
+    await worker.setDesiredState(.running)
+    _ = await worker.reconcileUntilStable()
+    // The recording reaches its limit between finding the stop button and
+    // tapping it.
+    await app.moveOn(beforeNextTapTo: .review(task))
+
+    await worker.setDesiredState(.paused)
+    let snapshot = await worker.reconcileUntilStable()
+
+    let taps = await app.taps
+    let screen = await app.screen
+    XCTAssertEqual(snapshot.phase, .stable)
+    XCTAssertEqual(taps, ["record-delete", "Discard", "record-cancel"])
+    XCTAssertEqual(screen, .card(task))
+  }
+
+  func testButtonCoveredDuringARecordingWaitsForAPerson() async throws {
     let app = FakeMinuteApp(screen: .recording(FakeMinuteApp.assignedTask))
     await app.showUnknownDialog()
     let worker = try MinuteDefinition.worker(for: app)
@@ -607,6 +666,7 @@ final class OperationDefinitionTests: XCTestCase {
     let snapshot = await settle(worker, app)
 
     let taps = await app.taps
+    let relaunches = await app.relaunches
     XCTAssertEqual(
       snapshot.phase,
       .needsAttention(
@@ -614,6 +674,24 @@ final class OperationDefinitionTests: XCTestCase {
       )
     )
     XCTAssertEqual(taps, [])
+    XCTAssertEqual(relaunches, 0)
+  }
+
+  func testSheetOverATabIsLeftByRestartingTheApp() async throws {
+    let app = FakeMinuteApp(screen: .settings)
+    await app.showUnknownDialog()
+    let worker = try MinuteDefinition.worker(for: app)
+
+    await worker.setDesiredState(.running)
+    let snapshot = await settle(worker, app)
+
+    let taps = await app.taps
+    let relaunches = await app.relaunches
+    let screen = await app.screen
+    XCTAssertEqual(snapshot.phase, .stable)
+    XCTAssertEqual(relaunches, 1)
+    XCTAssertEqual(taps, ["task-card-17", "record-start-task", "record-arm"])
+    XCTAssertEqual(screen, .recording(FakeMinuteApp.assignedTask))
   }
 
   func testSaveDialogIsCancelledWhenRecordingsAreDiscarded() async throws {
@@ -689,18 +767,46 @@ final class OperationDefinitionTests: XCTestCase {
     XCTAssertEqual(resumed.observation, .state("recording"))
   }
 
-  func testUnknownScreenNeedsAttentionWithoutTapping() async throws {
+  func testRecordingStartsAfterAnotherAppWasInFrontOfAScrolledList() async throws {
+    let app = FakeMinuteApp(screen: .tasks)
+    await app.showOtherApp()
+    let worker = try MinuteDefinition.worker(for: app)
+
+    await worker.setDesiredState(.running)
+    let snapshot = await settle(worker, app)
+
+    let screen = await app.screen
+    XCTAssertEqual(snapshot.phase, .stable)
+    XCTAssertEqual(screen, .recording(FakeMinuteApp.assignedTask))
+  }
+
+  func testUnknownPageOutsideTheRecordFlowIsLeftByRestartingTheApp() async throws {
     let app = FakeMinuteApp(screen: .somethingElse)
     let worker = try MinuteDefinition.worker(for: app)
 
     await worker.setDesiredState(.running)
     let snapshot = await settle(worker, app)
 
-    let taps = await app.taps
+    let relaunches = await app.relaunches
+    let screen = await app.screen
+    XCTAssertEqual(snapshot.phase, .stable)
+    XCTAssertEqual(relaunches, 1)
+    XCTAssertEqual(screen, .recording(FakeMinuteApp.assignedTask))
+  }
+
+  func testScreenStillUnknownAfterARestartWaitsForAPerson() async throws {
+    let app = FakeMinuteApp(screen: .somethingElse)
+    await app.launchesInto(.somethingElse)
+    let worker = try MinuteDefinition.worker(for: app)
+
+    await worker.setDesiredState(.running)
+    let snapshot = await settle(worker, app)
+
+    let relaunches = await app.relaunches
     guard case .needsAttention = snapshot.phase else {
-      return XCTFail("An unknown screen did not stop the worker.")
+      return XCTFail("A screen that stays unknown after a restart did not stop the worker.")
     }
-    XCTAssertEqual(taps, [])
+    XCTAssertEqual(relaunches, 1)
   }
 
   func testSystemAlertStopsTheWorkerBeforeAnyTap() async throws {

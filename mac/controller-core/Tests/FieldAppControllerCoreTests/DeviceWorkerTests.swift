@@ -233,13 +233,13 @@ final class DeviceWorkerTests: XCTestCase {
   }
 
   func testUnknownScreenFailsClosedWithoutTapping() async {
-    let adapter = InMemoryCaptureAdapter(unknown: "a permission prompt")
+    let adapter = InMemoryCaptureAdapter(unknown: "The app shows a permission prompt.")
     let worker = DeviceWorker(deviceID: "test-device", adapter: adapter)
 
     await worker.setDesiredState(.running)
     let snapshot = await worker.reconcileUntilStable()
 
-    XCTAssertEqual(snapshot.phase, .needsAttention("Unknown screen: a permission prompt"))
+    XCTAssertEqual(snapshot.phase, .needsAttention("The app shows a permission prompt."))
     let actions = await adapter.actionLog()
     XCTAssertEqual(actions, [])
   }
@@ -371,7 +371,7 @@ final class DeviceWorkerTests: XCTestCase {
   }
 
   func testPauseAndStopLeavesAnAttentionStateUntouched() async {
-    let adapter = InMemoryCaptureAdapter(unknown: "a permission prompt")
+    let adapter = InMemoryCaptureAdapter(unknown: "The app shows a permission prompt.")
     let worker = DeviceWorker(deviceID: "test-device", adapter: adapter)
     await worker.setDesiredState(.running)
     _ = await worker.reconcileUntilStable()
@@ -380,7 +380,7 @@ final class DeviceWorkerTests: XCTestCase {
 
     let actions = await adapter.actionLog()
     let snapshotAfterStop = await worker.snapshot()
-    XCTAssertEqual(finalSnapshot.phase, .needsAttention("Unknown screen: a permission prompt"))
+    XCTAssertEqual(finalSnapshot.phase, .needsAttention("The app shows a permission prompt."))
     XCTAssertEqual(actions, [])
     XCTAssertEqual(snapshotAfterStop.phase, .stopped)
   }

@@ -168,5 +168,8 @@
   "goals": {
     "running": ["recording"],
     "paused": ["assigned-task-card"]
+  },
+  "recovery": {
+    "relaunchUnless": [{ "name": "record-screen" }]
   }
 }

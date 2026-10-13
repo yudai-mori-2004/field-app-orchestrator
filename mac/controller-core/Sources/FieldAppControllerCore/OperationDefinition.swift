@@ -90,6 +90,18 @@ public struct AppTransition: Codable, Sendable, Equatable {
   }
 }
 
+/// How to get back to known ground from a screen the definition does not
+/// describe.
+public struct DefinitionRecovery: Codable, Sendable, Equatable {
+  /// The app is restarted unless one of these elements is on screen. They
+  /// mark screens where a restart could cost work, such as a recording.
+  public let relaunchUnless: [ElementSelector]
+
+  public init(relaunchUnless: [ElementSelector]) {
+    self.relaunchUnless = relaunchUnless
+  }
+}
+
 public struct DefinitionGoals: Codable, Sendable, Equatable {
   public let running: [String]
   public let paused: [String]
@@ -124,6 +136,7 @@ public struct OperationDefinition: Codable, Sendable, Equatable {
   public let actions: [DefinitionAction]
   public let appTransitions: [AppTransition]
   public let goals: DefinitionGoals
+  public let recovery: DefinitionRecovery?
 
   public init(
     identifier: String,
@@ -133,7 +146,8 @@ public struct OperationDefinition: Codable, Sendable, Equatable {
     states: [DefinitionState],
     actions: [DefinitionAction],
     appTransitions: [AppTransition],
-    goals: DefinitionGoals
+    goals: DefinitionGoals,
+    recovery: DefinitionRecovery? = nil
   ) {
     self.identifier = identifier
     self.displayName = displayName
@@ -143,6 +157,7 @@ public struct OperationDefinition: Codable, Sendable, Equatable {
     self.actions = actions
     self.appTransitions = appTransitions
     self.goals = goals
+    self.recovery = recovery
   }
 
   public func validate() throws {
@@ -245,6 +260,7 @@ public struct OperationDefinition: Codable, Sendable, Equatable {
       + actions.flatMap { action in
         [action.tap] + (action.search.map { [$0.container, $0.items] } ?? [])
       }
+      + (recovery?.relaunchUnless ?? [])
   }
 
   func allows(_ impact: CaptureActionImpact) -> Bool {
@@ -327,7 +343,6 @@ public enum OperationDefinitionError: Error, LocalizedError, Sendable, Equatable
   case expectedExactlyOneElement(action: String, found: Int)
   case unsupportedAction(String)
   case systemAlert(String)
-  case coveredElement(action: String)
   case deviceLocked
 
   public var errorDescription: String? {
@@ -344,8 +359,6 @@ public enum OperationDefinitionError: Error, LocalizedError, Sendable, Equatable
       return "The definition does not support action \(identifier)."
     case .systemAlert(let text):
       return "A system alert needs a person: \(text)"
-    case .coveredElement(let action):
-      return "Action \(action) found its element covered by a screen the definition does not describe."
     case .deviceLocked:
       return "The device is locked and could not be unlocked. A person needs to unlock it."
     }
@@ -356,11 +369,23 @@ public enum OperationDefinitionError: Error, LocalizedError, Sendable, Equatable
 /// app moved on after the step was planned.
 struct TargetLeftScreen: CaptureStaleStepError {}
 
+/// Something the definition does not describe, such as a sheet the app
+/// opened, covers the element an action was going to tap. The elements under
+/// it stay in place, so the screen still matches the state it covers.
+struct TargetCovered: CaptureCoveredStepError, LocalizedError {
+  let action: String
+
+  var errorDescription: String? {
+    "Action \(action) found its element covered by a screen the definition does not describe."
+  }
+}
+
 /// Runs an operation definition on one device: reads which state the app is
 /// in, plans the next step toward the requested state, and taps one element
 /// at a time.
 public struct OperationDefinitionAdapter: CaptureAppAdapter {
   static let activateApp = CaptureAction(identifier: "system.activate-app", impact: .navigation)
+  static let relaunchApp = CaptureAction(identifier: "system.relaunch-app", impact: .navigation)
 
   private let session: any AppAutomationSession
   private let definition: OperationDefinition
@@ -432,26 +457,48 @@ public struct OperationDefinitionAdapter: CaptureAppAdapter {
     }
   }
 
+  /// Restarting the app leaves any screen of it, but loses what the screens
+  /// marked in the definition hold, such as a recording.
+  public func recovery(from observation: CaptureObservation) async throws -> CaptureAction? {
+    guard case .unknown = observation, let recovery = definition.recovery,
+      try await session.frontmostBundleIdentifier() == definition.bundleIdentifier,
+      try await session.elements(matching: recovery.relaunchUnless).isEmpty
+    else {
+      return nil
+    }
+    return Self.relaunchApp
+  }
+
   public func perform(_ action: CaptureAction, from observation: CaptureObservation) async throws {
-    if action == Self.activateApp {
+    if action == Self.activateApp, try await session.isLocked() {
+      // Unlocking only works without a passcode. With one, a person has to
+      // unlock the device, which is not a problem with the link.
+      try? await session.unlock()
       if try await session.isLocked() {
-        // Unlocking only works without a passcode. With one, a person has to
-        // unlock the device, which is not a problem with the link.
-        try? await session.unlock()
-        if try await session.isLocked() {
-          throw OperationDefinitionError.deviceLocked
-        }
+        throw OperationDefinitionError.deviceLocked
       }
+    }
+    // A system alert takes any tap for itself and stays in front of the app.
+    if let alert = try await session.systemAlertText() {
+      throw OperationDefinitionError.systemAlert(alert)
+    }
+
+    switch action {
+    case Self.activateApp:
       try await session.activateApp()
-    } else {
+    case Self.relaunchApp:
+      try await session.terminateApp()
+      try await session.activateApp()
+    default:
       guard let definitionAction = actionsByRuntimeAction[action] else {
         throw OperationDefinitionError.unsupportedAction(action.identifier)
       }
-      if let alert = try await session.systemAlertText() {
-        throw OperationDefinitionError.systemAlert(alert)
+      do {
+        let target = try await locate(definitionAction)
+        try await session.tap(try await reachable(target, for: definitionAction))
+      } catch AppiumAutomationError.staleElement {
+        throw TargetLeftScreen()
       }
-      let target = try await locate(definitionAction)
-      try await session.tap(try await reachable(target, for: definitionAction))
     }
 
     // Capture apps can drop a tap while busy. If the screen stays put, the
@@ -517,7 +564,7 @@ public struct OperationDefinitionAdapter: CaptureAppAdapter {
       }
       try await Task.sleep(nanoseconds: pollNanoseconds)
     }
-    throw OperationDefinitionError.coveredElement(action: action.id)
+    throw TargetCovered(action: action.id)
   }
 
   /// Starts from the top of the list and works downward. Lists that ignore
@@ -532,7 +579,7 @@ public struct OperationDefinitionAdapter: CaptureAppAdapter {
     let lower = AutomationPoint(x: frame.midX, y: frame.y + frame.height * 0.8)
     let upper = AutomationPoint(x: frame.midX, y: frame.y + frame.height * 0.2)
 
-    try await session.scrollToTop()
+    try await session.scrollToTop(atX: frame.midX)
     try await Task.sleep(nanoseconds: pollNanoseconds * 3)
     let (initialMatches, initialItems) = try await readList(selector, search)
     if !initialMatches.isEmpty {

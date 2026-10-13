@@ -135,21 +135,29 @@ public struct AutomationPoint: Sendable, Equatable {
 }
 
 public protocol AppAutomationSession: Sendable {
-  /// Every element that matches any of the selectors, read in one query.
+  /// Every element that matches any of the selectors, read in one query from
+  /// whatever is in front at the center of the screen. System screens such
+  /// as Control Center count as in front, so the app under them shows none.
   func elements(matching selectors: [ElementSelector]) async throws -> [AutomationElement]
   func rect(of element: AutomationElement) async throws -> AutomationRect
   /// False while something such as a dialog covers the element.
   func isHittable(_ element: AutomationElement) async throws -> Bool
+  /// Throws `AppiumAutomationError.staleElement` when the element has left
+  /// the screen since it was found.
   func tap(_ element: AutomationElement) async throws
   func drag(from start: AutomationPoint, to end: AutomationPoint) async throws
-  /// Taps the status bar, which iOS answers by scrolling the frontmost list
-  /// back to its top.
-  func scrollToTop() async throws
+  /// Taps the status bar at `x`, which iOS answers by scrolling the frontmost
+  /// list back to its top. The left end is avoided because, after a switch
+  /// from another app, it holds the link back to that app.
+  func scrollToTop(atX x: Double) async throws
+  /// The app in front at the center of the screen. The home screen and
+  /// system screens such as Control Center report the system's own app.
   func frontmostBundleIdentifier() async throws -> String?
   func isLocked() async throws -> Bool
   /// Unlocks a device without a passcode.
   func unlock() async throws
   func activateApp() async throws
+  func terminateApp() async throws
   func systemAlertText() async throws -> String?
   func close() async
 }
@@ -159,6 +167,7 @@ public enum AppiumAutomationError: Error, LocalizedError, Sendable, Equatable {
   case malformedResponse(String)
   case commandFailed(String)
   case noSuchAlert
+  case staleElement
 
   public var errorDescription: String? {
     switch self {
@@ -170,6 +179,8 @@ public enum AppiumAutomationError: Error, LocalizedError, Sendable, Equatable {
       return "Appium command failed: \(detail)"
     case .noSuchAlert:
       return "No system alert is open."
+    case .staleElement:
+      return "The element is no longer on screen."
     }
   }
 }
@@ -179,7 +190,7 @@ extension AppiumAutomationError: CaptureLinkError {
     switch self {
     case .commandFailed, .malformedResponse:
       return true
-    case .invalidConfiguration, .noSuchAlert:
+    case .invalidConfiguration, .noSuchAlert, .staleElement:
       return false
     }
   }
@@ -310,8 +321,8 @@ public actor AppiumSession: AppAutomationSession {
     )
   }
 
-  public func scrollToTop() async throws {
-    _ = try await execute("mobile: tap", arguments: ["x": 60, "y": 12])
+  public func scrollToTop(atX x: Double) async throws {
+    _ = try await execute("mobile: tap", arguments: ["x": x, "y": 12])
   }
 
   public func frontmostBundleIdentifier() async throws -> String? {
@@ -345,6 +356,13 @@ public actor AppiumSession: AppAutomationSession {
     )
   }
 
+  public func terminateApp() async throws {
+    _ = try await execute(
+      "mobile: terminateApp",
+      arguments: ["bundleId": configuration.bundleIdentifier]
+    )
+  }
+
   public func systemAlertText() async throws -> String? {
     do {
       let value = try await command("GET", ["alert", "text"])
@@ -364,7 +382,8 @@ public actor AppiumSession: AppAutomationSession {
 
   /// Sends one command within the current session. A failed command drops
   /// the session, so the next command reconnects instead of reusing a
-  /// session the device may no longer have.
+  /// session the device may no longer have. Answers about the screen, such
+  /// as a missing alert, come from a working session and keep it.
   private func command(
     _ method: String,
     _ pathComponents: [String],
@@ -377,8 +396,8 @@ public actor AppiumSession: AppAutomationSession {
         pathComponents: ["session", identifier] + pathComponents,
         body: body
       )
-    } catch AppiumAutomationError.noSuchAlert {
-      throw AppiumAutomationError.noSuchAlert
+    } catch let error as AppiumAutomationError where !error.isLinkFailure {
+      throw error
     } catch {
       await invalidateCurrentSession()
       throw error
@@ -415,16 +434,16 @@ public actor AppiumSession: AppAutomationSession {
   }
 
   private func create() async throws {
-    // A new session must attach to the running app. Relaunching it would end
-    // a recording in progress, and sessions are recreated after disconnects.
+    // The session names no app, so creating or ending one never launches or
+    // ends the capture app, and a recording continues across reconnects. An
+    // app named here would also be read whenever it runs in the foreground,
+    // even under Control Center, where a tap meant for it lands on Control
+    // Center instead.
     let capabilities: [String: Any] = [
       "platformName": "iOS",
       "appium:automationName": "XCUITest",
       "appium:udid": configuration.deviceID,
-      "appium:bundleId": configuration.bundleIdentifier,
       "appium:noReset": true,
-      "appium:forceAppLaunch": false,
-      "appium:shouldTerminateApp": false,
       "appium:useNewWDA": false,
       "appium:xcodeOrgId": configuration.developmentTeam,
       "appium:xcodeSigningId": "Apple Development",
@@ -451,10 +470,36 @@ public actor AppiumSession: AppAutomationSession {
     else {
       throw AppiumAutomationError.malformedResponse("sessionId is missing")
     }
+    // A session without its settings would read the wrong app, so it is
+    // only used once they are in place.
+    do {
+      try await configure(identifier)
+    } catch {
+      _ = try? await request(method: "DELETE", pathComponents: ["session", identifier], body: nil)
+      throw error
+    }
     sessionIdentifier = identifier
+  }
+
+  private func configure(_ identifier: String) async throws {
+    let window = try await request(
+      method: "GET",
+      pathComponents: ["session", identifier, "window", "rect"],
+      body: nil
+    )
+    guard
+      let window = window as? [String: Any],
+      let width = (window["width"] as? NSNumber)?.doubleValue,
+      let height = (window["height"] as? NSNumber)?.doubleValue
+    else {
+      throw AppiumAutomationError.malformedResponse("window rect is incomplete")
+    }
 
     // Capture apps keep their main thread busy, so waiting for idle would
     // delay every tap by the full timeout. Readiness is judged from the screen.
+    // WebDriverAgent treats the app under the detection point as the one in
+    // front. Its default, near the top left corner, is where notification
+    // banners appear, so the center of the screen is used instead.
     _ = try await request(
       method: "POST",
       pathComponents: ["session", identifier, "appium", "settings"],
@@ -463,6 +508,7 @@ public actor AppiumSession: AppAutomationSession {
           "waitForIdleTimeout": 0,
           "shouldUseCompactResponses": false,
           "elementResponseAttributes": "type,attribute/name,label",
+          "activeAppDetectionPoint": "\(Int(width / 2)),\(Int(height / 2))",
         ]
       ]
     )
@@ -511,11 +557,15 @@ public actor AppiumSession: AppAutomationSession {
     if let errorValue = value as? [String: Any],
       let errorName = errorValue["error"] as? String
     {
-      if errorName == "no such alert" {
+      switch errorName {
+      case "no such alert":
         throw AppiumAutomationError.noSuchAlert
+      case "stale element reference":
+        throw AppiumAutomationError.staleElement
+      default:
+        let message = errorValue["message"] as? String ?? errorName
+        throw AppiumAutomationError.commandFailed(message)
       }
-      let message = errorValue["message"] as? String ?? errorName
-      throw AppiumAutomationError.commandFailed(message)
     }
     if !(200..<300).contains(httpResponse.statusCode) {
       throw AppiumAutomationError.commandFailed("HTTP \(httpResponse.statusCode)")

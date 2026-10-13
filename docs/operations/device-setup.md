@@ -6,7 +6,7 @@ Macの`field-app`は、iPhone上のWebDriverAgentと直接やり取りします�
 
 ### Mac
 
-Macは、使うiPhoneのiOSに対応するXcodeが動くものを使います。確かめた組み合わせは、macOS 26.3、Xcode 26.4、iOS 26.4.1のiPhone 12 miniです。Xcode 26.4.1はmacOS 26.2以降で、Xcode 27はmacOS 26.6以降で動き、macOS 26が入るMac miniはM1（2020年）以降です（[AppleのXcodeの対応表](https://developer.apple.com/support/xcode/)、[macOS Tahoe 26に対応しているコンピュータ](https://support.apple.com/ja-jp/122867)）。iOS 27のiPhoneでは確かめていません。
+Macは、使うiPhoneのiOSに対応するXcodeが動くものを使います。確かめた組み合わせは、macOS 26.3、Xcode 26.4、iOS 26.4.1のiPhone 12 miniです。iOS 26.5.2のiPhone 12 miniでも、WebDriverAgentが起動して画面を読めました。Xcode 26.4.1はmacOS 26.2以降で、Xcode 27はmacOS 26.6以降で動き、macOS 26が入るMac miniはM1（2020年）以降です（[AppleのXcodeの対応表](https://developer.apple.com/support/xcode/)、[macOS Tahoe 26に対応しているコンピュータ](https://support.apple.com/ja-jp/122867)）。iOS 27のiPhoneでは確かめていません。
 
 Macごとに、一度だけ次を済ませます。
 

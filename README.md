@@ -123,7 +123,7 @@ Ctrl-Cを押したときやターミナルを閉じたときも、`quit`と同�
 
 動いている間は、読み取った画面、進めた一歩（押したボタン、警告を閉じる、アプリを前面に戻すなど）、状態の変化を時刻つきで表示します。
 
-現場では、`field-app`をサービスとして登録します。Macにログインすると起動し、落ちたときは起動し直され、表示はログファイルに出ます。詳しくは[iPhoneとMacの準備と運転](docs/operations/device-setup.md#サービスとして動かす)にあります。
+現場では、`field-app`をサービスとして登録します。Macにログインすると起動し、落ちたときは起動し直され、表示はログファイルに出ます。背面タップのショートカットに書くMacの名前は、Macの個体の名前ではなく、現場のMacに付ける役割の名前にします。どちらも[iPhoneとMacの準備と運転](docs/operations/device-setup.md#サービスとして動かす)にあります。
 
 ```sh
 tools/service.sh install config/local/minute-01.env config/local/minute.json

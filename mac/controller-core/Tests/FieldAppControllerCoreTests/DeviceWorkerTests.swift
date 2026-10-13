@@ -6,6 +6,19 @@ private enum AdapterError: Error {
   case invalidTransition(CaptureAction, String)
 }
 
+private final class CommandLog: @unchecked Sendable {
+  private let lock = NSLock()
+  private var commands: [DesiredCaptureState] = []
+
+  func append(_ command: DesiredCaptureState) {
+    lock.withLock { commands.append(command) }
+  }
+
+  var all: [DesiredCaptureState] {
+    lock.withLock { commands }
+  }
+}
+
 private actor InMemoryCaptureAdapter: CaptureAppAdapter {
   fileprivate static let openTask = CaptureAction(
     identifier: "test.open-task",
@@ -503,6 +516,25 @@ final class DeviceWorkerTests: XCTestCase {
     let answered = await worker.outcome(of: revision, within: .milliseconds(50))
 
     XCTAssertEqual(answered?.phase, .stopped)
+  }
+
+  /// Commands reach the worker from the terminal, the back taps, the
+  /// battery guard, and the shutdown, so its report is the one place where
+  /// the command can be kept for the next start.
+  func testEveryChangeOfTheCommandIsReported() async {
+    let adapter = InMemoryCaptureAdapter(screen: "recording")
+    let reported = CommandLog()
+    let worker = DeviceWorker(deviceID: "test-device", adapter: adapter) { event in
+      if case .desiredStateChanged(let command) = event {
+        reported.append(command)
+      }
+    }
+
+    await worker.setDesiredState(.running)
+    await worker.setDesiredState(.running)
+    _ = await worker.pauseAndStop()
+
+    XCTAssertEqual(reported.all, [.running, .paused])
   }
 }
 

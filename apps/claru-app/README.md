@@ -11,11 +11,11 @@ swift run --package-path mac/controller-core field-app \
   --validate-definition config/local/claru.json
 ```
 
-起動するときは、端末ごとに`FAO_DEVICE_ID`と`FAO_DEVICE_LABEL`を変えます。`caffeinate -i`は、動いている間Macをスリープさせません。
+起動するときは、端末ごとに`FAO_DEVICE_ID`と`FAO_DEVICE_LABEL`を変えます。
 
 ```sh
 FAO_DEVICE_ID=<IPHONE_UDID> \
 FAO_DEVICE_LABEL=claru-01 \
-caffeinate -i swift run --package-path mac/controller-core field-app \
+swift run --package-path mac/controller-core field-app \
   --definition config/local/claru.json
 ```

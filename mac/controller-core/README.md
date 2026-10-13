@@ -14,6 +14,8 @@ Mac側で、iPhone 1台分の操作を受け持つ部分です。
 
 `BatteryGuard`は、充電していない状態で電池が決めた残量まで減ったときに、一度だけ止める判断を返します。
 
+`InstructionRecord`は、目標の状態をディスクに残します。`DeviceWorker`は目標の状態が変わるたびに知らせるので、`field-app`はそれを残し、`running`のまま前のプロセスが終わっていたときだけ、起動した直後に引き継ぎます。
+
 ```sh
 swift test
 ```

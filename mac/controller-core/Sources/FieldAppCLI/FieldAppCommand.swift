@@ -71,16 +71,44 @@ struct FieldAppCommand {
         + " (afterRecording: \(definition.afterRecording.rawValue),"
         + " pause at \(batteryStopPercent)% battery)..."
     )
+    // Following the app needs the Mac awake for as long as this runs.
+    let awake = ProcessInfo.processInfo.beginActivity(
+      options: .idleSystemSleepDisabled,
+      reason: "Operating \(definition.displayName) on \(deviceLabel)"
+    )
+    defer { ProcessInfo.processInfo.endActivity(awake) }
+
     let session = WebDriverAgentSession(
       configuration: agentConfiguration,
       host: XcodeWebDriverAgentHost(configuration: agentConfiguration)
     )
     let adapter = try OperationDefinitionAdapter(session: session, definition: definition)
+    let instructions = InstructionRecord(
+      deviceID: deviceID,
+      directory: InstructionRecord.defaultDirectory
+    )
     let worker = DeviceWorker(deviceID: deviceLabel, adapter: adapter) { event in
+      if case .desiredStateChanged(let command) = event {
+        do {
+          try instructions.save(command)
+        } catch {
+          FileHandle.standardError.write(
+            Data("field-app: could not keep the command for the next start: \(error)\n".utf8)
+          )
+        }
+      }
       if let line = eventDescription(event) {
         // Alert texts carry a title and a message on separate lines.
         print("\(timestamp()) \(line.replacingOccurrences(of: "\n", with: " / "))")
       }
+    }
+    // A recording loop that was under way when the last process died goes
+    // on from here. After a pause or a normal exit, nothing is pressed
+    // until the first command.
+    let carriesOnRecording = instructions.carriedOver() == .running
+    if carriesOnRecording {
+      await worker.setDesiredState(.running)
+      print("\(timestamp()) requested running (carried over from before this start)")
     }
     let doorbell = Doorbell()
     let pollingTask = Task {
@@ -115,12 +143,17 @@ struct FieldAppCommand {
 
     // Typed commands and termination signals share one queue, so Ctrl-C or
     // a closed terminal leaves the device paused the same way `quit` does.
+    // Without a terminal, as under launchd, nobody types and the end of
+    // input says nothing about the operator, so only signals end the run.
     let (commands, sender) = AsyncStream<String>.makeStream()
-    Thread.detachNewThread {
-      while let line = readLine(strippingNewline: true) {
-        sender.yield(line.lowercased())
+    let hasTerminal = isatty(STDIN_FILENO) != 0
+    if hasTerminal {
+      Thread.detachNewThread {
+        while let line = readLine(strippingNewline: true) {
+          sender.yield(line.lowercased())
+        }
+        sender.yield("quit")
       }
-      sender.yield("quit")
     }
     var signalSources: [any DispatchSourceSignal] = []
     for signalNumber in [SIGINT, SIGTERM, SIGHUP] {
@@ -132,7 +165,12 @@ struct FieldAppCommand {
     }
     defer { signalSources.forEach { $0.cancel() } }
 
-    print("Observing without tapping until the first command. Commands: start, pause, status, retry, quit")
+    if !carriesOnRecording {
+      print("Observing without tapping until the first command.")
+    }
+    if hasTerminal {
+      print("Commands: start, pause, status, retry, quit")
+    }
     for await command in commands {
       switch command {
       case "start":
@@ -292,9 +330,13 @@ struct FieldAppCommand {
     return testRun
   }
 
+  /// The date is included because a service's log runs over many days.
   private static func timestamp() -> String {
     Date.now.formatted(
-      .dateTime.hour(.twoDigits(amPM: .omitted)).minute(.twoDigits).second(.twoDigits)
+      Date.ISO8601FormatStyle(timeZone: .current)
+        .year().month().day().dateSeparator(.dash)
+        .dateTimeSeparator(.space)
+        .time(includingFractionalSeconds: false).timeSeparator(.colon)
     )
   }
 
@@ -308,6 +350,9 @@ struct FieldAppCommand {
       return nil
     case .phaseChanged(let phase):
       return "phase \(phaseDescription(phase))"
+    case .desiredStateChanged:
+      // Each source of a command prints its own line.
+      return nil
     }
   }
 

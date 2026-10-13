@@ -30,7 +30,7 @@ iPhoneを足すときは、そのiPhoneをUSBでつなぎ、そのUDIDでもう�
 
 - MacとiPhoneを同じネットワークにつなぐ。Macからの操作も、背面タップの指示も、このネットワークを通る。ゲスト用のWi-Fiのように端末どうしの通信を止めるネットワークでは届かないので、持ち込みの小さなルーターを使うと現場の設定に左右されない
 - 回線の速さは問わない。録画中のやり取りは、1台あたり1分に6回ほどの短い問い合わせで、返事は合わせて数KBになる
-- Macはスリープさせない。電源につなぎ、`caffeinate -i`の下で`field-app`を動かす
+- Macは電源につなぐ。`field-app`は、動いている間Macをスリープさせない。MacBookはふたを閉じるとスリープするので、開けたままにする
 
 ## 起動と指示
 
@@ -46,7 +46,7 @@ iPhone 1台につき、`field-app`を一つ起動します。端末ごとに次�
 
 アプリごとの起動例は[`apps/minute-app/README.md`](../../apps/minute-app/README.md)と[`apps/claru-app/README.md`](../../apps/claru-app/README.md)にあります。
 
-各`field-app`プロセスは、最初の指示が来るまで画面を読むだけで何も押しません。録画中に起動し直しても録画は続きます。標準入力から次の命令を送ります。
+各`field-app`プロセスは、最初の指示が来るまで画面を読むだけで何も押しません。録画中に起動し直しても録画は続きます。撮影を続ける指示の間に前のプロセスが落ちていたときだけは、その指示を引き継ぎます（[サービスとして動かす](#サービスとして動かす)）。ターミナルから起動したときは、次の命令を入力できます。
 
 - `start`: その端末を`running`（撮影を続ける）へ切り替える
 - `pause`: `paused`（止める）へ切り替える。録画中なら停止し、`afterRecording`の方針で保存または破棄して、操作定義の止めた状態まで進める
@@ -55,6 +55,31 @@ iPhone 1台につき、`field-app`を一つ起動します。端末ごとに次�
 - `quit`: 止めた状態まで進めてからセッションを閉じる。送信済みの操作があれば終わるのを待つ。`needsAttention`のときやiPhoneにつながっていないときはタップせず、止めた状態を確かめられなかったことを表示して終了コード1で終わる。Ctrl-C、終了要求、ターミナルを閉じたときも同じ
 
 `field-app`は、読み取った画面、進めた一歩、ワーカーの状態の変化を、時刻つきで標準出力に出します。
+
+## サービスとして動かす
+
+現場では、`field-app`をmacOSのlaunchdのサービスとして登録します。Macにログインすると起動し、落ちたときは起動し直されます。iPhone 1台につき、サービスを1つ登録します。
+
+```sh
+tools/service.sh install config/local/minute-01.env config/local/minute.json
+```
+
+1つ目の引数は、そのiPhoneの環境変数を書いたファイルです。`FAO_DEVICE_LABEL`がサービスの名前になるので、iPhoneごとに変えます。2つ目の引数は操作定義です。
+
+```sh
+FAO_DEVICE_ID=<IPHONE_UDID>
+FAO_DEVICE_LABEL=minute-01
+FAO_CONTROL_PORT=8400
+FAO_CONTROL_TOKEN=<16文字以上のトークン>
+```
+
+- 表示は`~/Library/Logs/field-app/<FAO_DEVICE_LABEL>.log`に出る。ターミナルがないので、指示は背面タップか、`FAO_CONTROL_PORT`への要求で出す
+- `field-app`を更新したときや設定を変えたときは、同じコマンドをもう一度実行する。組み立て直し、動いているサービスを止めてから、新しいもので起動する
+- 外すときは、`tools/service.sh remove config/local/minute-01.env`を実行する
+- 入れ直しや取り外しでサービスを止めると、`field-app`は`quit`と同じく、止めた状態まで進めてから終わる
+- 撮影を続けている間に`field-app`が落ちたときは、起動し直した`field-app`が指示を引き継ぎ、続きから進める。指示は`~/Library/Application Support/field-app/`に残している。止めた後と、ふつうに終了した後は引き継がず、最初の指示まで何も押さない
+- サービスが終了しても、WebDriverAgentは動き続け、次の`field-app`がそのまま使う
+- サービスが起動するのは、Macにログインしたとき。Macを再起動した後は、ログインする
 
 ## 背面タップで止める・再開する
 

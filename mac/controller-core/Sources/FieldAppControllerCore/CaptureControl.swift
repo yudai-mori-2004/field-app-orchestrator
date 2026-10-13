@@ -113,6 +113,8 @@ public enum DeviceWorkerEvent: Sendable, Equatable {
   case observed(CaptureObservation)
   case performing(CaptureAction)
   case phaseChanged(DeviceWorkerPhase)
+  /// The command the worker follows changed, whichever source it came from.
+  case desiredStateChanged(DesiredCaptureState)
 }
 
 public actor DeviceWorker {
@@ -120,7 +122,13 @@ public actor DeviceWorker {
 
   private let adapter: any CaptureAppAdapter
   private let onEvent: (@Sendable (DeviceWorkerEvent) -> Void)?
-  private var desiredState: DesiredCaptureState?
+  private var desiredState: DesiredCaptureState? {
+    didSet {
+      if let desiredState, desiredState != oldValue {
+        onEvent?(.desiredStateChanged(desiredState))
+      }
+    }
+  }
   private var observation: CaptureObservation? {
     didSet {
       if let observation, observation != oldValue {

@@ -13,11 +13,13 @@ final class ControlServer: Sendable {
   private let listener: NWListener
   private let token: String
   private let handle: @Sendable (ControlRequest) async -> String?
+  private let report: @Sendable (String) -> Void
   private let queue = DispatchQueue(label: "field-app.control")
 
   init(
     port: UInt16,
     token: String,
+    report: @escaping @Sendable (String) -> Void,
     handle: @escaping @Sendable (ControlRequest) async -> String?
   ) throws {
     guard let endpointPort = NWEndpoint.Port(rawValue: port) else {
@@ -25,6 +27,7 @@ final class ControlServer: Sendable {
     }
     listener = try NWListener(using: .tcp, on: endpointPort)
     self.token = token
+    self.report = report
     self.handle = handle
   }
 
@@ -49,6 +52,9 @@ final class ControlServer: Sendable {
       }
       let (status, request) = parse(text)
       guard let request else {
+        // The Shortcut reads nothing aloud for an empty reply, so a Shortcut
+        // that is set up wrong shows only here.
+        report("answered \(status) to \(Self.summary(of: text))")
         respond(on: connection, status: status, body: "")
         return
       }
@@ -62,6 +68,14 @@ final class ControlServer: Sendable {
         respond(on: connection, status: "200 OK", body: reply)
       }
     }
+  }
+
+  /// The method and path of a request. The query is left out because it
+  /// holds the token.
+  private static func summary(of text: String) -> String {
+    let requestLine = text.prefix { $0 != "\r" && $0 != "\n" }.split(separator: " ")
+    guard requestLine.count >= 2 else { return "a request that is not HTTP" }
+    return "\(requestLine[0]) \(requestLine[1].prefix { $0 != "?" })"
   }
 
   /// Reads the request line, for example `POST /start?token=... HTTP/1.1`.

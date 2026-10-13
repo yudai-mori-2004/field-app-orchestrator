@@ -256,7 +256,11 @@ struct FieldAppCommand {
     guard token.count >= 16 else {
       throw FieldAppCLIError.invalidEnvironment("FAO_CONTROL_TOKEN must be at least 16 characters.")
     }
-    let server = try ControlServer(port: port, token: token) { request in
+    let server = try ControlServer(
+      port: port,
+      token: token,
+      report: { print("\(timestamp()) control port \($0)") }
+    ) { request in
       let requested: DesiredCaptureState = request == .start ? .running : .paused
       // The reply says the Mac has the command and goes on from here. It is
       // sent at once, so the wearer hears right away whether the tap reached

@@ -52,7 +52,7 @@ private actor InMemoryCaptureAdapter: CaptureAppAdapter {
     performHook = hook
   }
 
-  func observe() async throws -> CaptureObservation {
+  func observe(after previous: CaptureObservation?) async throws -> CaptureObservation {
     observation
   }
 

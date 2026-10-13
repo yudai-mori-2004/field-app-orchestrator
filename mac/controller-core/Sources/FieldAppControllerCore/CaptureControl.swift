@@ -36,6 +36,10 @@ public enum CaptureStep: Sendable, Equatable {
   case perform(CaptureAction)
 }
 
+/// A step that was planned from a screen the app has already left, such as a
+/// button that disappeared before the tap. The worker observes again.
+public protocol CaptureStaleStepError: Error {}
+
 /// An error from the link to the device rather than from the app. The worker
 /// keeps observing after one, because the link may come back.
 public protocol CaptureLinkError: Error {
@@ -43,7 +47,9 @@ public protocol CaptureLinkError: Error {
 }
 
 public protocol CaptureAppAdapter: Sendable {
-  func observe() async throws -> CaptureObservation
+  /// Reads the screen. `previous` is the last observation, so a screen that
+  /// has not moved can be confirmed with a single read.
+  func observe(after previous: CaptureObservation?) async throws -> CaptureObservation
   func nextStep(
     toward desiredState: DesiredCaptureState,
     from observation: CaptureObservation
@@ -183,6 +189,23 @@ public actor DeviceWorker {
     )
   }
 
+  /// How long a caller should wait before the next reconcile. A settled
+  /// device only needs to be checked for the app's own moves, such as a
+  /// recording reaching its limit, so it is read rarely to spare the
+  /// device's radio and battery. Commands should not wait for this delay.
+  public func nextObservationDelay() -> Duration {
+    switch phase {
+    case .waitingForApp:
+      return .seconds(1)
+    case .reconnecting:
+      return .seconds(2)
+    case .transitioning:
+      return .milliseconds(500)
+    case .idle, .stable, .needsAttention, .stopped:
+      return .seconds(10)
+    }
+  }
+
   @discardableResult
   public func reconcileUntilStable(maxTransitions: Int = 12) async -> DeviceWorkerSnapshot {
     guard !isReconciling, !isStopping, !shouldStop else { return snapshot() }
@@ -218,7 +241,7 @@ public actor DeviceWorker {
       }
 
       do {
-        let current = try await adapter.observe()
+        let current = try await adapter.observe(after: observation)
         observation = current
         // Starting the worker must not change what the device is doing; a
         // recording in progress continues until someone asks for a state.
@@ -253,6 +276,8 @@ public actor DeviceWorker {
           onEvent?(.performing(action))
           try await adapter.perform(action, from: current)
         }
+      } catch is CaptureStaleStepError {
+        continue
       } catch {
         let description =
           (error as? LocalizedError)?.errorDescription ?? String(describing: error)

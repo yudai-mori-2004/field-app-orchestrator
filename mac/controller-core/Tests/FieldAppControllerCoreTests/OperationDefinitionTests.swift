@@ -49,6 +49,7 @@ private actor FakeMinuteApp: AppAutomationSession {
   private(set) var saved = 0
   private(set) var discarded = 0
   private(set) var drags = 0
+  private(set) var reads = 0
   private var firstRenderedCard = 0
   private var listSettlingAtTop = false
   private var frontmost: String? = FakeMinuteApp.bundleIdentifier
@@ -56,6 +57,7 @@ private actor FakeMinuteApp: AppAutomationSession {
   private var droppedTaps: Set<String> = []
   private var failingCalls = 0
   private var locked = false
+  private var pendingMove: (afterReads: Int, screen: Screen)?
   private var hasPasscode = false
   private var tapsWithLostAnswers: Set<String> = []
   private let clipIsShort: Bool
@@ -91,6 +93,12 @@ private actor FakeMinuteApp: AppAutomationSession {
     frontmost = "com.apple.springboard"
   }
 
+  /// The app moves to `screen` right after the given number of reads, the way
+  /// a screen can still show a button for a moment while it is torn down.
+  func moveOn(afterReads count: Int, to screen: Screen) {
+    pendingMove = (reads + count, screen)
+  }
+
   func lock(withPasscode: Bool = false) {
     locked = true
     hasPasscode = withPasscode
@@ -122,6 +130,11 @@ private actor FakeMinuteApp: AppAutomationSession {
 
   func elements(matching selectors: [ElementSelector]) async throws -> [AutomationElement] {
     try failIfLinkIsDown()
+    if let pendingMove, reads >= pendingMove.afterReads {
+      screen = pendingMove.screen
+      self.pendingMove = nil
+    }
+    reads += 1
     return renderedElements().filter { element in selectors.contains { $0.matches(element) } }
   }
 
@@ -484,6 +497,38 @@ final class OperationDefinitionTests: XCTestCase {
       ["nav-index", "task-card-17", "record-start-task", "record-arm"]
     )
     XCTAssertGreaterThan(drags, 0)
+  }
+
+  func testSettledScreenIsReadOnceAndCheckedRarely() async throws {
+    let app = FakeMinuteApp(screen: .recording(FakeMinuteApp.assignedTask))
+    let worker = try MinuteDefinition.worker(for: app)
+    await worker.setDesiredState(.running)
+    _ = await worker.reconcileUntilStable()
+    let readsWhenSettled = await app.reads
+
+    _ = await worker.reconcileUntilStable()
+
+    let readsAfterOneMoreCheck = await app.reads
+    let delay = await worker.nextObservationDelay()
+    XCTAssertEqual(readsAfterOneMoreCheck - readsWhenSettled, 1)
+    XCTAssertEqual(delay, .seconds(10))
+  }
+
+  func testButtonThatLeftTheScreenBeforeTheTapLeadsToANewPlan() async throws {
+    let task = FakeMinuteApp.assignedTask
+    let app = FakeMinuteApp(screen: .recording(task))
+    let worker = try MinuteDefinition.worker(for: app)
+    await worker.setDesiredState(.running)
+    _ = await worker.reconcileUntilStable()
+    // The recording screen is already gone when the stop button is looked up.
+    await app.moveOn(afterReads: 1, to: .armed(task))
+
+    await worker.setDesiredState(.paused)
+    let snapshot = await settle(worker, app)
+
+    let taps = await app.taps
+    XCTAssertEqual(snapshot.phase, .stable)
+    XCTAssertEqual(taps, ["record-cancel"])
   }
 
   func testCountdownWaitsForTheAppWithoutTapping() async throws {

@@ -77,10 +77,11 @@ struct FieldAppCommand {
         print("\(timestamp()) \(line)")
       }
     }
+    let doorbell = Doorbell()
     let pollingTask = Task {
       while !Task.isCancelled {
         _ = await worker.reconcileUntilStable()
-        try? await Task.sleep(nanoseconds: 500_000_000)
+        await doorbell.wait(for: worker.nextObservationDelay())
       }
     }
     let batteryTask = Task {
@@ -91,12 +92,17 @@ struct FieldAppCommand {
           await worker.snapshot().desiredState == .running
         {
           await worker.setDesiredState(.paused)
+          await doorbell.ring()
           announce("\(deviceLabel)の電池が残り\(Int(battery.level * 100))%になったので、撮影を止めました。")
         }
         try? await Task.sleep(nanoseconds: 60_000_000_000)
       }
     }
-    let controlServer = try startControlServer(environment: environment, worker: worker)
+    let controlServer = try startControlServer(
+      environment: environment,
+      worker: worker,
+      doorbell: doorbell
+    )
     defer {
       batteryTask.cancel()
       controlServer?.stop()
@@ -126,17 +132,25 @@ struct FieldAppCommand {
       switch command {
       case "start":
         await worker.setDesiredState(.running)
+        await doorbell.ring()
         print("\(timestamp()) requested running")
       case "pause":
         await worker.setDesiredState(.paused)
+        await doorbell.ring()
         print("\(timestamp()) requested paused")
       case "status":
         print(await snapshotDescription(worker.snapshot()))
       case "retry":
         await worker.acknowledgeAndRetry()
+        await doorbell.ring()
         print("\(timestamp()) retrying from a fresh observation")
       case "quit":
-        try await shutDown(worker: worker, pollingTask: pollingTask, session: session)
+        try await shutDown(
+          worker: worker,
+          pollingTask: pollingTask,
+          doorbell: doorbell,
+          session: session
+        )
         return
       case "":
         continue
@@ -149,11 +163,13 @@ struct FieldAppCommand {
   private static func shutDown(
     worker: DeviceWorker,
     pollingTask: Task<Void, Never>,
+    doorbell: Doorbell,
     session: AppiumSession
   ) async throws {
     // Cancelling polling first would cut off a tap that is already on its way.
     let finalSnapshot = await worker.pauseAndStop()
     pollingTask.cancel()
+    await doorbell.ring()
     _ = await pollingTask.value
     await session.close()
 
@@ -186,7 +202,8 @@ struct FieldAppCommand {
   /// FAO_CONTROL_PORT and FAO_CONTROL_TOKEN are set.
   private static func startControlServer(
     environment: [String: String],
-    worker: DeviceWorker
+    worker: DeviceWorker,
+    doorbell: Doorbell
   ) throws -> ControlServer? {
     guard let rawPort = environment["FAO_CONTROL_PORT"] else { return nil }
     guard let port = UInt16(rawPort) else {
@@ -197,7 +214,9 @@ struct FieldAppCommand {
       throw FieldAppCLIError.invalidEnvironment("FAO_CONTROL_TOKEN must be at least 16 characters.")
     }
     let server = try ControlServer(port: port, token: token) { request in
-      await answer(request, worker: worker)
+      let reply = await answer(request, worker: worker)
+      await doorbell.ring()
+      return reply
     }
     server.start()
     print("Listening for start, pause, and toggle on port \(port).")

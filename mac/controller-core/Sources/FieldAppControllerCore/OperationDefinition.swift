@@ -352,6 +352,10 @@ public enum OperationDefinitionError: Error, LocalizedError, Sendable, Equatable
   }
 }
 
+/// The element an action was going to tap is no longer on screen, because the
+/// app moved on after the step was planned.
+struct TargetLeftScreen: CaptureStaleStepError {}
+
 /// Runs an operation definition on one device: reads which state the app is
 /// in, plans the next step toward the requested state, and taps one element
 /// at a time.
@@ -365,8 +369,8 @@ public struct OperationDefinitionAdapter: CaptureAppAdapter {
   private let settleReads: Int
   private let actionPolls: Int
 
-  /// `pollNanoseconds` spaces repeated reads of the screen. A state counts as
-  /// settled when two consecutive reads agree, and an action waits up to
+  /// `pollNanoseconds` spaces repeated reads of the screen. A new state counts
+  /// as settled when two consecutive reads agree, and an action waits up to
   /// `actionPolls` reads for the screen to change.
   public init(
     session: any AppAutomationSession,
@@ -388,17 +392,20 @@ public struct OperationDefinitionAdapter: CaptureAppAdapter {
     )
   }
 
-  public func observe() async throws -> CaptureObservation {
-    var previous = try await readState()
+  public func observe(after previous: CaptureObservation?) async throws -> CaptureObservation {
+    var latest = try await readState()
+    if latest == previous {
+      return latest
+    }
     for _ in 0..<settleReads {
       try await Task.sleep(nanoseconds: pollNanoseconds)
       let current = try await readState()
-      if current == previous {
+      if current == latest {
         return current
       }
-      previous = current
+      latest = current
     }
-    return previous
+    return latest
   }
 
   public func nextStep(
@@ -484,6 +491,9 @@ public struct OperationDefinitionAdapter: CaptureAppAdapter {
     if matches.count == 1, let search = action.search {
       try await center(matches[0], within: search.container)
       matches = try await session.elements(matching: [action.tap])
+    }
+    if matches.isEmpty, action.search == nil {
+      throw TargetLeftScreen()
     }
     guard matches.count == 1, let target = matches.first else {
       throw OperationDefinitionError.expectedExactlyOneElement(

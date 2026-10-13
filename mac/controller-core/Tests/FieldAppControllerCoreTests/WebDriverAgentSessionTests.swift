@@ -122,13 +122,20 @@ final class WebDriverAgentSessionTests: XCTestCase {
     try super.tearDownWithError()
   }
 
-  private func session(host: StubHost) throws -> WebDriverAgentSession {
+  private func session(
+    host: StubHost,
+    reconnectInterval: Duration = .zero
+  ) throws -> WebDriverAgentSession {
     let configuration = try WebDriverAgentConfiguration(
       deviceID: "device",
       bundleIdentifier: "com.bakerdata.minute",
       xctestrun: testRunFile
     )
-    return WebDriverAgentSession(configuration: configuration, host: host, reconnectInterval: .zero)
+    return WebDriverAgentSession(
+      configuration: configuration,
+      host: host,
+      reconnectInterval: reconnectInterval
+    )
   }
 
   /// A session that named the app would read it even under Control Center,
@@ -229,6 +236,26 @@ final class WebDriverAgentSessionTests: XCTestCase {
       XCTAssertEqual(error as? AutomationError, .commandFailed("settings were not applied"))
     }
     XCTAssertEqual(AgentStub.requests.last, "DELETE /session/s1")
+  }
+
+  /// The worker's first read and the battery reading start together. Failing
+  /// the one that arrives during the connection would show a lost link at
+  /// every start.
+  func testCommandsThatArriveTogetherShareOneConnection() async throws {
+    AgentStub.answer(
+      Self.connected.merging([
+        "GET /session/s1/wda/locked": (200, #"{"value":false}"#),
+        "GET /session/s1/wda/batteryInfo": (200, #"{"value":{"level":0.5,"state":1}}"#),
+      ]) { $1 })
+    let session = try session(host: StubHost(), reconnectInterval: .seconds(10))
+
+    async let locked = session.isLocked()
+    async let battery = session.batteryState()
+    let (isLocked, batteryState) = try await (locked, battery)
+
+    XCTAssertFalse(isLocked)
+    XCTAssertEqual(batteryState.level, 0.5)
+    XCTAssertEqual(AgentStub.requests.filter { $0 == "POST /session" }.count, 1)
   }
 
   /// A start during a Wi-Fi drop would only fail, and would end a run that

@@ -190,6 +190,7 @@ public actor WebDriverAgentSession: AppAutomationSession {
   private let reconnectInterval: Duration
   private var agent: URL?
   private var sessionIdentifier: String?
+  private var connection: Task<String, Error>?
   private var lastConnectionAttempt: ContinuousClock.Instant?
   private var unansweredStarts = 0
 
@@ -353,14 +354,27 @@ public actor WebDriverAgentSession: AppAutomationSession {
     }
   }
 
-  /// Reconnects at most once per interval. WebDriverAgent is started only
-  /// when the iPhone is reachable and WebDriverAgent does not answer. While
-  /// the iPhone is out of reach, such as during a Wi-Fi drop, a start would
-  /// only fail, and a run still alive when the iPhone is back is used again.
+  /// The worker and the battery reading use the session at the same time,
+  /// so a command that arrives while the session is being connected waits
+  /// for that connection instead of failing as a lost link.
   private func connectedSessionIdentifier() async throws -> String {
     if let sessionIdentifier {
       return sessionIdentifier
     }
+    if let connection {
+      return try await connection.value
+    }
+    let connection = Task { try await connect() }
+    self.connection = connection
+    defer { self.connection = nil }
+    return try await connection.value
+  }
+
+  /// Reconnects at most once per interval. WebDriverAgent is started only
+  /// when the iPhone is reachable and WebDriverAgent does not answer. While
+  /// the iPhone is out of reach, such as during a Wi-Fi drop, a start would
+  /// only fail, and a run still alive when the iPhone is back is used again.
+  private func connect() async throws -> String {
     if let lastConnectionAttempt,
       ContinuousClock.now - lastConnectionAttempt < reconnectInterval
     {

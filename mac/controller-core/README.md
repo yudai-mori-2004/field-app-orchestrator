@@ -4,6 +4,8 @@ Mac側で、iPhone 1台分の操作を受け持つ部分です。
 
 `DeviceWorker`は、`running`または`paused`という目標の状態を持ち、`CaptureAppAdapter`に画面の読み取り、次の一歩の判断、操作の実行を任せて、一歩ずつ進めます。開始や止める指示はタップに直接変えず、目標の状態を書き換えるだけです。終了するときは`pauseAndStop()`で止めた状態まで進めてから止めます。送った操作の途中なら、それが終わるのを待ちます。
 
+指示の結果を伝える呼び出し側は、`setDesiredState`が返す番号を`outcome(of:within:)`に渡して待ちます。その指示のあとの読み取りで、目標に着いた、人の確認が要る、つながっていない、のどれかになると返り、時間内にならなければ`nil`が返ります。指示より前の状態を結果として返さないように、状態がどの指示に対するものかを番号で区別しています。
+
 `OperationDefinitionAdapter`は、アプリ別の操作定義（JSON）を読み込み、画面の状態の判定、目標までの道順の計算、タップを行います。
 
 `WebDriverAgentSession`は、iPhone上のWebDriverAgentとネットワーク越しに直接セッションを作り、画面の中央にあるアプリの部品の検索、タップ、スクロール、アプリを前面に戻す操作と起動し直す操作を行います。iPhoneの宛先とWebDriverAgentの起動は`XcodeWebDriverAgentHost`が受け持ち、`devicectl`と`xcodebuild`を使います。iPhoneに届くのにWebDriverAgentが返事をしないときだけ起動し直し、届かない間は待ちます。

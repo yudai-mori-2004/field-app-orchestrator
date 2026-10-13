@@ -256,20 +256,19 @@ struct FieldAppCommand {
     guard token.count >= 16 else {
       throw FieldAppCLIError.invalidEnvironment("FAO_CONTROL_TOKEN must be at least 16 characters.")
     }
-    let replies = WearerReplies()
     let server = try ControlServer(port: port, token: token) { request in
       let requested: DesiredCaptureState = request == .start ? .running : .paused
-      let revision = await worker.setDesiredState(requested)
+      // The reply says the Mac has the command and goes on from here. It is
+      // sent at once, so the wearer hears right away whether the tap reached
+      // the Mac. Held until the recording starts, it would also be read
+      // aloud into that recording.
+      guard await worker.setDesiredState(requested) else {
+        print("\(timestamp()) gave no reply to \(request.rawValue) from the control port (stopping)")
+        return nil
+      }
       await doorbell.ring()
+      let reply = WearerReplies.sentence(for: requested)
       print("\(timestamp()) requested \(requested.rawValue) (\(request.rawValue) from the control port)")
-
-      // The Shortcut waits for this reply. The limit leaves room for a start
-      // that goes through the app's countdown, which took about 20 seconds
-      // on a device, so that it is answered with its result. A start that
-      // takes longer, such as while the app searches its task list, is
-      // answered as under way.
-      let outcome = await worker.outcome(of: revision, within: .seconds(30))
-      let reply = await replies.sentence(requested: requested, outcome: outcome)
       print("\(timestamp()) replied \"\(reply)\"")
       return reply
     }

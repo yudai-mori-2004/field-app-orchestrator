@@ -407,115 +407,18 @@ final class DeviceWorkerTests: XCTestCase {
     XCTAssertEqual(snapshotAfterStop.phase, .stopped)
   }
 
-  func testOutcomeAnswersACommandOnceTheDeviceReachesTheRequestedState() async {
+  /// A back tap is answered as soon as the worker has the command, so a
+  /// worker that is stopping has to say it did not take it.
+  func testCommandIsTakenUntilTheWorkerStops() async {
     let adapter = InMemoryCaptureAdapter()
     let worker = DeviceWorker(deviceID: "test-device", adapter: adapter)
 
-    let revision = await worker.setDesiredState(.running)
-    let outcome = Task { await worker.outcome(of: revision, within: .seconds(5)) }
-    // Let the caller wait before the pass runs, as a Shortcut does.
-    try? await Task.sleep(nanoseconds: 20_000_000)
-    _ = await worker.reconcileUntilStable()
-
-    let answered = await outcome.value
-    XCTAssertEqual(answered?.phase, .stable)
-    XCTAssertEqual(answered?.observation, .state("recording"))
-  }
-
-  func testOutcomeDoesNotReportTheStateFromBeforeTheCommand() async {
-    let adapter = InMemoryCaptureAdapter()
-    let worker = DeviceWorker(deviceID: "test-device", adapter: adapter)
-    await worker.setDesiredState(.paused)
-    _ = await worker.reconcileUntilStable()
-
-    // The paused state is still stable, but no pass has looked at the device
-    // for the start yet.
-    let revision = await worker.setDesiredState(.running)
-    let beforeAnyPass = await worker.outcome(of: revision, within: .milliseconds(50))
-
-    XCTAssertNil(beforeAnyPass)
-  }
-
-  func testOutcomeWaitsWhileTheAppCountsDown() async {
-    let adapter = InMemoryCaptureAdapter(screen: "countdown")
-    let worker = DeviceWorker(deviceID: "test-device", adapter: adapter)
-
-    let revision = await worker.setDesiredState(.running)
-    _ = await worker.reconcileUntilStable()
-    let duringCountdown = await worker.outcome(of: revision, within: .milliseconds(50))
-    XCTAssertNil(duringCountdown)
-
-    await adapter.showScreen("recording")
-    _ = await worker.reconcileUntilStable()
-    let afterCountdown = await worker.outcome(of: revision, within: .milliseconds(50))
-    XCTAssertEqual(afterCountdown?.phase, .stable)
-    XCTAssertEqual(afterCountdown?.observation, .state("recording"))
-  }
-
-  func testOutcomeReportsADeviceThatNeedsAPerson() async {
-    let adapter = InMemoryCaptureAdapter(unknown: "The app shows a permission prompt.")
-    let worker = DeviceWorker(deviceID: "test-device", adapter: adapter)
-
-    let revision = await worker.setDesiredState(.running)
-    _ = await worker.reconcileUntilStable()
-    let answered = await worker.outcome(of: revision, within: .milliseconds(50))
-
-    XCTAssertEqual(answered?.phase, .needsAttention("The app shows a permission prompt."))
-  }
-
-  func testOutcomeOfAPauseDuringAnActionIsThePausedState() async {
-    let adapter = InMemoryCaptureAdapter(actionDelayNanoseconds: 50_000_000)
-    let worker = DeviceWorker(deviceID: "test-device", adapter: adapter)
-
-    let startRevision = await worker.setDesiredState(.running)
-    let reconciliation = Task {
-      await worker.reconcileUntilStable()
-    }
-    try? await Task.sleep(nanoseconds: 10_000_000)
-    let pauseRevision = await worker.setDesiredState(.paused)
-    _ = await reconciliation.value
-
-    let pauseOutcome = await worker.outcome(of: pauseRevision, within: .milliseconds(50))
-    let startOutcome = await worker.outcome(of: startRevision, within: .milliseconds(50))
-    XCTAssertEqual(pauseOutcome?.phase, .stable)
-    XCTAssertEqual(pauseOutcome?.desiredState, .paused)
-    XCTAssertEqual(pauseOutcome?.observation, .state("home"))
-    // The start was overtaken, and the state that answers it is the pause.
-    XCTAssertEqual(startOutcome?.desiredState, .paused)
-  }
-
-  func testOutcomeOfACommandOvertakenByAWaitForAPersonIsThatWait() async {
-    let adapter = InMemoryCaptureAdapter()
-    let worker = DeviceWorker(deviceID: "test-device", adapter: adapter)
-    await adapter.onPerform { action in
-      if action == InMemoryCaptureAdapter.openTask {
-        await worker.setDesiredState(.paused)
-      }
-    }
-
-    // The pause arrives during the pass's last tap, and the pass then stops
-    // at its limit without planning from the pause. Nothing acts on the pause
-    // until a person looks, so the wait answers it.
-    await worker.setDesiredState(.running)
-    _ = await worker.reconcileUntilStable(maxTransitions: 1)
-    let pauseRevision = await worker.snapshot().revision
-    let answered = await worker.outcome(of: pauseRevision, within: .milliseconds(50))
-
-    XCTAssertEqual(
-      answered?.phase,
-      .needsAttention("The app did not reach the requested state within the transition limit.")
-    )
-  }
-
-  func testOutcomeOfACommandAfterStoppingIsTheStoppedWorker() async {
-    let adapter = InMemoryCaptureAdapter()
-    let worker = DeviceWorker(deviceID: "test-device", adapter: adapter)
+    let takenWhileRunning = await worker.setDesiredState(.running)
     _ = await worker.pauseAndStop()
+    let takenAfterStopping = await worker.setDesiredState(.running)
 
-    let revision = await worker.setDesiredState(.running)
-    let answered = await worker.outcome(of: revision, within: .milliseconds(50))
-
-    XCTAssertEqual(answered?.phase, .stopped)
+    XCTAssertTrue(takenWhileRunning)
+    XCTAssertFalse(takenAfterStopping)
   }
 
   /// Commands reach the worker from the terminal, the back taps, the

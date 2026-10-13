@@ -12,13 +12,13 @@ enum ControlRequest: String, Sendable {
 final class ControlServer: Sendable {
   private let listener: NWListener
   private let token: String
-  private let handle: @Sendable (ControlRequest) async -> String
+  private let handle: @Sendable (ControlRequest) async -> String?
   private let queue = DispatchQueue(label: "field-app.control")
 
   init(
     port: UInt16,
     token: String,
-    handle: @escaping @Sendable (ControlRequest) async -> String
+    handle: @escaping @Sendable (ControlRequest) async -> String?
   ) throws {
     guard let endpointPort = NWEndpoint.Port(rawValue: port) else {
       throw ControlServerError.invalidPort(port)
@@ -53,7 +53,12 @@ final class ControlServer: Sendable {
         return
       }
       Task {
-        let reply = await handle(request)
+        // No sentence means the command was not taken, so the Shortcut is
+        // given nothing to read aloud.
+        guard let reply = await handle(request) else {
+          respond(on: connection, status: "503 Service Unavailable", body: "")
+          return
+        }
         respond(on: connection, status: "200 OK", body: reply)
       }
     }

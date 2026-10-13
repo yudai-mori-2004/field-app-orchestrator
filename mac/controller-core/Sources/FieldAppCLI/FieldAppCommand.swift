@@ -225,9 +225,12 @@ struct FieldAppCommand {
       await doorbell.ring()
       print("\(timestamp()) requested \(requested.rawValue) (\(request.rawValue) from the control port)")
 
-      // The Shortcut waits for this reply, so a start that takes longer, such
-      // as while the app searches its task list, is answered as under way.
-      let outcome = await worker.outcome(of: revision, within: .seconds(10))
+      // The Shortcut waits for this reply. The limit leaves room for a start
+      // that goes through the app's countdown, which took about 20 seconds
+      // on a device, so that it is answered with its result. A start that
+      // takes longer, such as while the app searches its task list, is
+      // answered as under way.
+      let outcome = await worker.outcome(of: revision, within: .seconds(30))
       let reply = await replies.sentence(requested: requested, outcome: outcome)
       print("\(timestamp()) replied \"\(reply)\"")
       return reply

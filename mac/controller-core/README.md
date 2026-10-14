@@ -1,23 +1,23 @@
 # Controller Core
 
-`field-app`のコードです。動き方の説明は[仕組み](../../docs/architecture.md)にあり、ここではどの部品がどこを受け持っているかを書きます。
+`field-app`のソースコードです。動作の仕組みは[アーキテクチャ](../../docs/architecture.md)を参照してください。このドキュメントでは、各コンポーネントの役割を説明します。
 
-## `field-app`のコマンド（`Sources/FieldAppCLI`）
+## コマンド（`Sources/FieldAppCLI`）
 
-- `FieldAppCommand`: `field-app`の入口。環境変数と操作定義を読み、下の部品を組み立てて、ターミナルの入力、背面タップの受け口、電池の見張りを動かす。動いている間はMacのスリープを防ぎ、出来事を時刻つきで記録に出す
-- `ControlServer`: 背面タップのショートカットからの`POST /start`と`POST /pause`を受ける。トークンを確かめ、受け付けなかった要求は理由を記録に出す
-- `WearerReplies`: 背面タップに返す文（「撮影を開始します。」「撮影を終了します。」）
+- `FieldAppCommand`: `field-app`のエントリーポイント。環境変数と操作定義を読み込み、下記のコンポーネントを構成して、ターミナルからの入力、背面タップの受信、バッテリー監視を実行する。実行中はMacのスリープを抑止し、イベントをタイムスタンプ付きでログに出力する
+- `ControlServer`: 背面タップのショートカットからの`POST /start`と`POST /pause`を受信する。トークンを検証し、受け付けなかったリクエストは理由をログに出力する
+- `WearerReplies`: 背面タップへの応答文（「撮影を開始します。」「撮影を終了します。」）
 
-## 判断と操作（`Sources/FieldAppControllerCore`）
+## 制御ライブラリ（`Sources/FieldAppControllerCore`）
 
-- `DeviceWorker`（`CaptureControl.swift`）: iPhone 1台の目標（`running`か`paused`）を持ち、画面を読み、次の一歩を決め、実行する、を一つずつ進める。止まった（`needsAttention`）、つなぎ直している（`reconnecting`）、などの様子もここが持つ。目標が変わるたびに知らせる
-- `OperationDefinition`と`OperationDefinitionAdapter`（`OperationDefinition.swift`）: 操作定義のJSONを読み、検証する。読み取った部品から画面の状態を一つに決め、目標までの道順を計算して次の一歩を返し、ボタンを押す。知らない画面から撮影アプリを起動し直すかどうかもここで決める
-- `WebDriverAgentSession`（`WebDriverAgentSession.swift`）: iPhoneのWebDriverAgentとHTTPで話す。部品の検索、タップ、スクロール、撮影アプリを前面に戻す操作と起動し直す操作、ロックの解除、iOSの警告、電池を扱う。つながらないときは、決めた間隔でつなぎ直す
-- `XcodeWebDriverAgentHost`（同じファイル）: `devicectl`でiPhoneの宛先を調べ、WebDriverAgentが返事をしないときに`xcodebuild`で起動する
-- `ElementSelector`、`AutomationElement`、`AppAutomationSession`（`Automation.swift`）: 画面の部品の選び方と、iPhoneを操作する口の取り決め。テストでは、この口を模擬のiPhoneに差し替える
-- `BatteryGuard`: 充電していない間に、電池が決めた残量まで減ったかを判断する
-- `InstructionRecord`: 目標をMacのディスクに残し、`field-app`が落ちたあとに引き継ぐ
-- `Doorbell`: 画面を読む間隔の待ちを、指示が届いたときに切り上げる
+- `DeviceWorker`（`CaptureControl.swift`）: iPhone 1台の目標状態（`running`または`paused`）を保持し、画面の読み取り、次の操作の決定、実行を1つずつ進める。要対応状態（`needsAttention`）や再接続中（`reconnecting`）などの状態も管理する。目標状態が変わるたびにイベントを通知する
+- `OperationDefinition`、`OperationDefinitionAdapter`（`OperationDefinition.swift`）: 操作定義のJSONを読み込み、検証する。読み取ったUI要素から画面の状態を特定し、目標状態までの経路を計算して次の操作を返し、タップを実行する。未定義の画面で撮影アプリを再起動するかどうかもここで判断する
+- `WebDriverAgentSession`（`WebDriverAgentSession.swift`）: iPhoneのWebDriverAgentとHTTPで通信する。UI要素の検索、タップ、スクロール、撮影アプリの前面表示と再起動、ロック解除、iOSのアラート、バッテリー情報の取得を行う。接続できない場合は、一定間隔で再接続する
+- `XcodeWebDriverAgentHost`（同上）: `devicectl`でiPhoneの接続先を取得し、WebDriverAgentが応答しない場合に`xcodebuild`で起動する
+- `ElementSelector`、`AutomationElement`、`AppAutomationSession`（`Automation.swift`）: UI要素の指定方法と、iPhoneを操作するインターフェースの定義。テストでは、このインターフェースをモックに差し替える
+- `BatteryGuard`: 充電していない状態で、バッテリー残量が設定値まで低下したかを判定する
+- `InstructionRecord`: 目標状態をMacのディスクに保存し、`field-app`の異常終了後に引き継ぐ
+- `Doorbell`: 画面の読み取り間隔の待機を、指示の受信時に中断する
 
 ## テスト
 
@@ -25,7 +25,7 @@
 swift test
 ```
 
-- `OperationDefinitionTests`: Minute Dataの操作定義の例を、模擬のMinute（`FakeMinuteApp`）に対して動かす。どの画面から始めても両方の目標に着くこと、ダイアログやシートに覆われたときに押さないこと、などを確かめる
-- `DeviceWorkerTests`: 目標の切り替え、止まったときの扱い、終了の流れを、画面を単純にした模擬のアプリで確かめる
-- `WebDriverAgentSessionTests`: WebDriverAgentの返事を差し替え、つなぎ直し、WebDriverAgentの起動、返事の読み方を確かめる
-- `InstructionRecordTests`、`DoorbellTests`: それぞれの部品だけを確かめる
+- `OperationDefinitionTests`: Minute Dataの操作定義のサンプルを、Minuteのモック（`FakeMinuteApp`）に対して実行する。どの画面から開始しても両方の目標状態に到達すること、ダイアログやシートに覆われたボタンをタップしないこと、などを検証する
+- `DeviceWorkerTests`: 目標状態の切り替え、要対応状態の扱い、終了処理を、画面を簡略化したモックで検証する
+- `WebDriverAgentSessionTests`: WebDriverAgentの応答を差し替え、再接続、WebDriverAgentの起動、応答の解釈を検証する
+- `InstructionRecordTests`、`DoorbellTests`: 各コンポーネント単体の動作を検証する

@@ -1,25 +1,25 @@
-# 0007: Appiumを外し、field-appがWebDriverAgentと直接話す
+# 0007: Appiumを廃止し、field-appがWebDriverAgentと直接通信する
 
 ## 状況
 
-iPhoneは作業者の頭に付くので、現場ではMacとケーブルでつなげません。それまでの実機の確認は、すべてUSBでつないだ状態でした。
+iPhoneは作業者の頭部に装着するため、現場ではMacとケーブルで接続できません。それまでの実機での確認は、すべてUSB接続の状態で行っていました。
 
-ケーブルを抜いて確かめると、iPhoneとWebDriverAgentは無線で成り立っていました。Xcodeは`devicectl`でiPhoneとの経路を保ち、`xcodebuild`でWebDriverAgentを5〜10秒で起動できます。WebDriverAgentは、Wi-FiでもXcodeの経路でも、Macからの問い合わせにすぐ答えます。
+ケーブルを外して確認したところ、iPhoneとWebDriverAgentは無線接続で動作していました。Xcodeは`devicectl`でiPhoneとの経路を維持し、`xcodebuild`でWebDriverAgentを5〜10秒で起動できます。WebDriverAgentは、Wi-Fi経由でもXcodeの経路経由でも、Macからのリクエストに即座に応答します。
 
-止まったのはAppiumでした。Appium（XCUITest Driver 12.17.2）は、iPhoneを探すとき、iOSの版を調べるとき、WebDriverAgentを起動する前にアプリを片づけるときに、USBでつながった端末だけを扱う仕組みを使います。ケーブルのないiPhoneは見つからず、WebDriverAgentを起動し直すこともできませんでした。Appiumの新しい無線用のトンネルも、iPhoneについてはUSBの端末しか扱っていません。
+停止していたのはAppiumでした。Appium（XCUITest Driver 12.17.2）は、iPhoneの検出、iOSのバージョンの取得、WebDriverAgent起動前のアプリの終了処理で、USB接続の端末のみを扱う仕組みを使用しています。ケーブル未接続のiPhoneは検出されず、WebDriverAgentの再起動もできませんでした。Appiumの新しい無線接続用のトンネルも、iPhoneについてはUSB接続の端末のみに対応しています。
 
 ## 決定
 
-Appiumを外します。`field-app`は、iPhone上のWebDriverAgentとネットワーク越しに直接話します。
+Appiumを廃止します。`field-app`は、iPhone上のWebDriverAgentとネットワーク経由で直接通信します。
 
-- iPhoneの宛先は、XcodeがiPhoneへ保つ経路のアドレスで、`devicectl`で調べる
-- WebDriverAgentが返事をしないときは、iPhoneに届くことを確かめてから、`field-app`が`xcodebuild`で起動し直す。iPhoneに届かない間は待つ。3回起動しても返事がなければ人を待つ
-- WebDriverAgentは`field-app`を終えても動き続け、次の`field-app`が使い回す
-- WebDriverAgentは`tools/setup_wda.sh`で一度だけ組み立てる。版と照合値はスクリプトで固定する
+- iPhoneの接続先は、XcodeがiPhoneとの間に維持している経路のアドレスを`devicectl`で取得して使用する
+- WebDriverAgentが応答しない場合は、iPhoneに到達できることを確認してから、`field-app`が`xcodebuild`で再起動する。iPhoneに到達できない間は待機する。3回起動しても応答がなければ要対応状態になる
+- WebDriverAgentは`field-app`の終了後も動作を継続し、次に起動した`field-app`が再利用する
+- WebDriverAgentは`tools/setup_wda.sh`でビルドする。バージョンとチェックサムはスクリプト内で固定する
 
 ## 結果
 
-- 現場で動かすものは、iPhone 1台につき`field-app`と`xcodebuild`の1組になる。Appiumのサーバーと、そのためのNode.jsは要らない
-- Wi-FiでもUSBでも同じ仕組みで動き、どのiPhoneも同じポートで済み、IPアドレスを固定しなくてよい
-- WebDriverAgentの版を上げるときは、スクリプトの版と照合値を書き換えて組み立て直す
-- Appiumの`mobile:`コマンドで送っていた操作は、`field-app`がWebDriverAgentの入口（`/wda/...`）へ直接送る
+- 現場で実行するのは、iPhone 1台につき`field-app`と`xcodebuild`の1組になる。Appiumサーバーと、そのためのNode.jsは不要になる
+- Wi-FiでもUSBでも同じ仕組みで動作し、すべてのiPhoneで同じポートを使用でき、IPアドレスを固定する必要がない
+- WebDriverAgentのバージョンを上げる場合は、スクリプトのバージョンとチェックサムを書き換えて再ビルドする
+- Appiumの`mobile:`コマンドで送信していた操作は、`field-app`がWebDriverAgentのエンドポイント（`/wda/...`）に直接送信する

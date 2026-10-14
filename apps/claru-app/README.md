@@ -1,21 +1,13 @@
-# Claru AIの操作定義
+# Claru AI
 
-Claru AIを操作するための操作定義のひな形です。Claru AIの画面はまだ調べていないため、状態と操作は仮の形で、目印はすべて`REPLACE_WITH_`の値になっています。
+Claru AIを操作するための操作定義のひな形（`definition.example.json`）です。Claru AIの画面はまだ調べていないので、状態と操作は仮の形で、目印はすべて`REPLACE_WITH_`で始まる値になっています。
 
-実機でClaru AIの画面を調べ、状態、操作、アプリが自分で進む移り変わりを書き足してから使います。書き方は[操作定義の形式](../../docs/app-operation-format.md)にあります。
+使うには、実機でClaru AIの画面を調べ、状態、操作、アプリが自分で進む移り変わりを書き足します。書き方は[操作定義の形式](../../docs/app-operation-format.md)にあります。書き足したら、検証してから使います。
 
 ```sh
 mkdir -p config/local
 cp apps/claru-app/definition.example.json config/local/claru.json
-swift run --package-path mac/controller-core field-app \
-  --validate-definition config/local/claru.json
+swift run --package-path mac/controller-core field-app --validate-definition config/local/claru.json
 ```
 
-起動するときは、端末ごとに`FAO_DEVICE_ID`と`FAO_DEVICE_LABEL`を変えます。
-
-```sh
-FAO_DEVICE_ID=<IPHONE_UDID> \
-FAO_DEVICE_LABEL=claru-01 \
-swift run --package-path mac/controller-core field-app \
-  --definition config/local/claru.json
-```
+`REPLACE_WITH_`の値が残っているうちは、検証が通りません。設定ファイルとサービスの登録は、Minute Dataと同じです（[セットアップ](../../docs/setup.md)）。

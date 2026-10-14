@@ -280,7 +280,12 @@ public actor WebDriverAgentSession: AppAutomationSession {
     }
     // 2 is charging and 3 is full, in UIDevice.BatteryState numbering.
     let state = (value?["state"] as? NSNumber)?.intValue ?? 0
-    return BatteryState(level: level, isCharging: state == 2 || state == 3)
+    // The iPhone reports the level as a 32-bit float, so 10% arrives as
+    // 0.10000000149 and would not count as having fallen to 10%.
+    return BatteryState(
+      level: (level * 100).rounded() / 100,
+      isCharging: state == 2 || state == 3
+    )
   }
 
   public func isLocked() async throws -> Bool {

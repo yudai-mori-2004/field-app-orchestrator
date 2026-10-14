@@ -258,6 +258,24 @@ final class WebDriverAgentSessionTests: XCTestCase {
     XCTAssertEqual(AgentStub.requests.filter { $0 == "POST /session" }.count, 1)
   }
 
+  /// Read as it arrives, 10% is a little above 0.1, and a pause set for 10%
+  /// waits for the next level the iPhone reports, which was 5% on a device.
+  func testBatteryLevelIsReadInWholePercent() async throws {
+    AgentStub.answer(
+      Self.connected.merging([
+        "GET /session/s1/wda/batteryInfo": (
+          200, #"{"value":{"level":0.10000000149011612,"state":1}}"#
+        )
+      ]) { $1 })
+    let session = try session(host: StubHost())
+
+    let battery = try await session.batteryState()
+
+    var pauseAtTenPercent = BatteryGuard(threshold: 0.10)
+    XCTAssertEqual(battery.level, 0.10)
+    XCTAssertTrue(pauseAtTenPercent.shouldPause(for: battery))
+  }
+
   /// A start during a Wi-Fi drop would only fail, and would end a run that
   /// may still be alive.
   func testIPhoneOutOfReachIsWaitedForWithoutStartingWebDriverAgent() async throws {

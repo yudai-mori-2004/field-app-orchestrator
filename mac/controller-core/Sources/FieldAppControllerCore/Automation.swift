@@ -174,6 +174,10 @@ public enum AutomationError: Error, LocalizedError, Sendable, Equatable {
   case noSuchAlert
   case staleElement
   case refused(String)
+  /// A person on the iPhone stopped the automation, for example by holding
+  /// both volume buttons. WebDriverAgent still answers but refuses to act
+  /// until it is started again.
+  case automationStopped(String)
   /// WebDriverAgent was started several times and never answered, for
   /// example because its signature expired. The detail is Xcode's output.
   case agentDidNotStart(String)
@@ -192,6 +196,8 @@ public enum AutomationError: Error, LocalizedError, Sendable, Equatable {
       return "The element is no longer on screen."
     case .refused(let detail):
       return "The device refused the command: \(detail)"
+    case .automationStopped(let detail):
+      return "The automation was stopped on the iPhone: \(detail)"
     case .agentDidNotStart(let output):
       return "WebDriverAgent did not start on the iPhone. Xcode said:\n\(output)"
     }
@@ -201,7 +207,7 @@ public enum AutomationError: Error, LocalizedError, Sendable, Equatable {
 extension AutomationError: CaptureLinkError {
   public var isLinkFailure: Bool {
     switch self {
-    case .commandFailed, .malformedResponse:
+    case .commandFailed, .malformedResponse, .automationStopped:
       return true
     case .invalidConfiguration, .noSuchAlert, .staleElement, .refused, .agentDidNotStart:
       return false

@@ -309,6 +309,60 @@ final class WebDriverAgentSessionTests: XCTestCase {
     XCTAssertEqual(starts, 1)
   }
 
+  private static let automationStopped = (
+    500,
+    #"{"value":{"error":"invalid argument","message":"Error Domain=XCTDaemonErrorDomain Code=41 \"Not authorized for performing UI testing actions.\""}}"#
+  )
+
+  /// After both volume buttons are held on the iPhone, WebDriverAgent still
+  /// answers its status. Reconnecting to that run would be refused forever.
+  func testAutomationStoppedOnTheIPhoneStartsWebDriverAgentAgain() async throws {
+    AgentStub.answer(
+      Self.connected.merging([
+        "POST /session/s1/wda/apps/activate": Self.automationStopped,
+        "DELETE /session/s1": Self.done,
+      ]) { $1 })
+    let host = StubHost()
+    let session = try session(host: host)
+
+    do {
+      try await session.activateApp()
+      XCTFail("An action after the automation was stopped did not fail.")
+    } catch let error as AutomationError {
+      XCTAssertTrue(error.isLinkFailure)
+    }
+    _ = try? await session.activateApp()
+
+    let starts = await host.starts
+    XCTAssertEqual(starts, 1)
+    XCTAssertEqual(AgentStub.requests.filter { $0 == "POST /session" }.count, 1)
+  }
+
+  /// With UI automation turned off in the developer settings, every start
+  /// is stopped again, and a person has to turn it back on.
+  func testAutomationThatStaysStoppedIsHandedToAPerson() async throws {
+    AgentStub.answer(
+      Self.connected.merging([
+        "POST /session/s1/wda/apps/activate": Self.automationStopped,
+        "DELETE /session/s1": Self.done,
+      ]) { $1 })
+    let host = StubHost()
+    let session = try session(host: host)
+
+    var lastError: Error?
+    for _ in 0..<8 {
+      do {
+        try await session.activateApp()
+      } catch {
+        lastError = error
+      }
+    }
+
+    let starts = await host.starts
+    XCTAssertEqual(starts, 3)
+    XCTAssertEqual((lastError as? AutomationError)?.isLinkFailure, false)
+  }
+
   func testWebDriverAgentThatNeverAnswersIsHandedToAPerson() async throws {
     AgentStub.answer([:])
     let host = StubHost()

@@ -193,6 +193,13 @@ public actor WebDriverAgentSession: AppAutomationSession {
   private var connection: Task<String, Error>?
   private var lastConnectionAttempt: ContinuousClock.Instant?
   private var unansweredStarts = 0
+  /// The running WebDriverAgent answers but may no longer act, so the next
+  /// connection starts it again.
+  private var automationStopped = false
+  /// Starts since the automation was stopped, without an action getting
+  /// through. They end in a person being asked to look, for example when UI
+  /// automation is turned off in the iPhone's developer settings.
+  private var startsAfterStop = 0
 
   public init(
     configuration: WebDriverAgentConfiguration,
@@ -253,19 +260,18 @@ public actor WebDriverAgentSession: AppAutomationSession {
   }
 
   public func tap(_ element: AutomationElement) async throws {
-    _ = try await command("POST", ["element", element.identifier, "click"], body: [:])
+    try await act(["element", element.identifier, "click"], body: [:])
   }
 
   public func drag(from start: AutomationPoint, to end: AutomationPoint) async throws {
-    _ = try await command(
-      "POST",
+    try await act(
       ["wda", "dragfromtoforduration"],
       body: ["fromX": start.x, "fromY": start.y, "toX": end.x, "toY": end.y, "duration": 0.4]
     )
   }
 
   public func scrollToTop(atX x: Double) async throws {
-    _ = try await command("POST", ["wda", "tap"], body: ["x": x, "y": 12])
+    try await act(["wda", "tap"], body: ["x": x, "y": 12])
   }
 
   public func frontmostBundleIdentifier() async throws -> String? {
@@ -294,23 +300,15 @@ public actor WebDriverAgentSession: AppAutomationSession {
   }
 
   public func unlock() async throws {
-    _ = try await command("POST", ["wda", "unlock"], body: [:])
+    try await act(["wda", "unlock"], body: [:])
   }
 
   public func activateApp() async throws {
-    _ = try await command(
-      "POST",
-      ["wda", "apps", "activate"],
-      body: ["bundleId": configuration.bundleIdentifier]
-    )
+    try await act(["wda", "apps", "activate"], body: ["bundleId": configuration.bundleIdentifier])
   }
 
   public func terminateApp() async throws {
-    _ = try await command(
-      "POST",
-      ["wda", "apps", "terminate"],
-      body: ["bundleId": configuration.bundleIdentifier]
-    )
+    try await act(["wda", "apps", "terminate"], body: ["bundleId": configuration.bundleIdentifier])
   }
 
   public func systemAlertText() async throws -> String? {
@@ -323,7 +321,7 @@ public actor WebDriverAgentSession: AppAutomationSession {
   }
 
   public func tapSystemAlertButton(_ label: String) async throws {
-    _ = try await command("POST", ["alert", "accept"], body: ["name": label])
+    try await act(["alert", "accept"], body: ["name": label])
   }
 
   /// Ends the session and leaves WebDriverAgent running for the next one.
@@ -359,6 +357,14 @@ public actor WebDriverAgentSession: AppAutomationSession {
     }
   }
 
+  /// Sends a command that acts on the iPhone. Once the automation is
+  /// stopped, XCTest still reads the screen but refuses these, so only they
+  /// show that it runs again.
+  private func act(_ pathComponents: [String], body: [String: Any]) async throws {
+    _ = try await command("POST", pathComponents, body: body)
+    startsAfterStop = 0
+  }
+
   /// The worker and the battery reading use the session at the same time,
   /// so a command that arrives while the session is being connected waits
   /// for that connection instead of failing as a lost link.
@@ -376,9 +382,10 @@ public actor WebDriverAgentSession: AppAutomationSession {
   }
 
   /// Reconnects at most once per interval. WebDriverAgent is started only
-  /// when the iPhone is reachable and WebDriverAgent does not answer. While
-  /// the iPhone is out of reach, such as during a Wi-Fi drop, a start would
-  /// only fail, and a run still alive when the iPhone is back is used again.
+  /// when the iPhone is reachable and WebDriverAgent does not answer, or
+  /// answers after the automation was stopped. While the iPhone is out of
+  /// reach, such as during a Wi-Fi drop, a start would only fail, and a run
+  /// still alive when the iPhone is back is used again.
   private func connect() async throws -> String {
     if let lastConnectionAttempt,
       ContinuousClock.now - lastConnectionAttempt < reconnectInterval
@@ -389,6 +396,18 @@ public actor WebDriverAgentSession: AppAutomationSession {
 
     guard let address = await host.deviceAddress() else {
       throw AutomationError.commandFailed("the iPhone is out of reach of the Mac")
+    }
+    if automationStopped {
+      guard startsAfterStop < Self.startAttempts else {
+        automationStopped = false
+        startsAfterStop = 0
+        throw AutomationError.refused(
+          "the automation stayed stopped after \(Self.startAttempts) starts of WebDriverAgent")
+      }
+      startsAfterStop += 1
+      automationStopped = false
+      try await host.startAgent()
+      throw AutomationError.commandFailed("starting WebDriverAgent again on the iPhone")
     }
     let agent = Self.agentURL(address: address, port: configuration.port)
     if await answers(agent) {
@@ -545,6 +564,13 @@ public actor WebDriverAgentSession: AppAutomationSession {
       let errorName = errorValue["error"] as? String
     {
       let message = errorValue["message"] as? String ?? errorName
+      // Holding both volume buttons ends the automation. WebDriverAgent keeps
+      // answering, but XCTest refuses to act with this until it is started
+      // again.
+      if message.contains("XCTDaemonErrorDomain Code=41") {
+        automationStopped = true
+        throw AutomationError.automationStopped(message)
+      }
       switch errorName {
       case "no such alert":
         throw AutomationError.noSuchAlert

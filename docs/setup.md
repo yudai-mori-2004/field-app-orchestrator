@@ -124,6 +124,8 @@ WebDriverAgentは、iPhoneのUI要素の取得とタップを行うアプリで�
 set -a && . config/local/minute-01.env && set +a && tools/setup_wda.sh "$FAO_DEVICE_ID"
 ```
 
+このコマンドは、Mac本体のターミナルで実行してください。新しいMacでの初回のビルドでは、XcodeがAppleのアカウントに署名用の証明書を作成し、その秘密鍵をキーチェーンに保存します。SSHなどリモートから実行すると、キーチェーンへの保存が許可されず、秘密鍵のない証明書だけがアカウントに残ります。その場合は、Xcodeの「Settings」→「Apple Accounts」→「Manage Certificates…」で、そのMacの秘密鍵のない証明書を失効させてから、Mac本体で再度実行します。キーチェーンへのアクセスの確認が表示されたら、Macのログインパスワードを入力して「常に許可」を選択します。
+
 最後に`** TEST BUILD SUCCEEDED **`と表示されれば完了です。ビルド成果物は`.wda/`に出力され、すべてのiPhoneで共通に使用します。完了したら、USBケーブルを外します。以降は、iPhoneがMacと同じWi-Fiに接続されていれば操作できます。
 
 ビルドは`.wda/`を再作成するため、稼働中の`field-app`のサービスがある場合は、事前に登録を解除してください（[iPhoneの追加](operation.md#iphoneの追加)）。署名の有効期限は1年です。期限が切れる前に再ビルドしてください。

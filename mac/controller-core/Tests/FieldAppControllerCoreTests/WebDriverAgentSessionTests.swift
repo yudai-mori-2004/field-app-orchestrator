@@ -309,6 +309,26 @@ final class WebDriverAgentSessionTests: XCTestCase {
     XCTAssertEqual(starts, 1)
   }
 
+  /// WebDriverAgent's own unlock left an iPhone on iOS 26.5 on its lock
+  /// screen, where a swipe up from the bottom edge opens it.
+  func testUnlockSwipesTheLockScreenUpFromTheBottomEdge() async throws {
+    AgentStub.answer(
+      Self.connected.merging([
+        "POST /session/s1/wda/pressButton": Self.done,
+        "POST /session/s1/wda/dragfromtoforduration": Self.done,
+      ]) { $1 })
+    let session = try session(host: StubHost())
+
+    try await session.unlock()
+
+    let swipe = AgentStub.body(of: "POST /session/s1/wda/dragfromtoforduration")
+    XCTAssertEqual(AgentStub.body(of: "POST /session/s1/wda/pressButton")?["name"] as? String, "home")
+    XCTAssertEqual(swipe?["fromY"] as? Double, 808)
+    XCTAssertEqual(swipe?["toY"] as? Double ?? 0, 812.0 / 3, accuracy: 0.001)
+    XCTAssertEqual(swipe?["fromX"] as? Double, 187.5)
+    XCTAssertFalse(AgentStub.requests.contains("POST /session/s1/wda/unlock"))
+  }
+
   private static let automationStopped = (
     500,
     #"{"value":{"error":"invalid argument","message":"Error Domain=XCTDaemonErrorDomain Code=41 \"Not authorized for performing UI testing actions.\""}}"#

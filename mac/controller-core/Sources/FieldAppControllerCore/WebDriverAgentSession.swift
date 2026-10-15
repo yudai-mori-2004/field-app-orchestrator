@@ -299,8 +299,25 @@ public actor WebDriverAgentSession: AppAutomationSession {
     return (value as? Bool) == true
   }
 
+  /// Wakes the screen and swipes the lock screen up from its bottom edge, as
+  /// a person opens it. WebDriverAgent's own unlock presses the home button
+  /// twice, which on iOS 26.5 wakes an iPhone without a home button but
+  /// leaves it on the lock screen.
   public func unlock() async throws {
-    try await act(["wda", "unlock"], body: [:])
+    let window = try await command("GET", ["window", "rect"]) as? [String: Any]
+    guard
+      let width = (window?["width"] as? NSNumber)?.doubleValue,
+      let height = (window?["height"] as? NSNumber)?.doubleValue
+    else {
+      throw AutomationError.malformedResponse("window rect is incomplete")
+    }
+    try await act(["wda", "pressButton"], body: ["name": "home"])
+    try await Task.sleep(for: .seconds(1))
+    try await drag(
+      from: AutomationPoint(x: width / 2, y: height - 4),
+      to: AutomationPoint(x: width / 2, y: height / 3)
+    )
+    try await Task.sleep(for: .seconds(1))
   }
 
   public func activateApp() async throws {

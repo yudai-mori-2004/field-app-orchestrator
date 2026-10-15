@@ -109,7 +109,7 @@ tools/service.sh install config/local/minute-01.env config/local/minute.json
 
 2. 追加するiPhoneで、[セットアップ](setup.md)の手順2〜5を実施します。設定ファイルには、他のiPhoneと異なるポート番号とトークンを設定します。
 3. 解除したサービスを再登録し、追加したiPhoneのサービスを登録します（セットアップの手順6）。
-4. 追加したiPhoneで、背面タップのショートカットを作成します（セットアップの手順7）。
+4. 追加したiPhoneの背面タップのショートカットを作成し、割り当てます（セットアップの手順7）。
 
 ## Macの交換
 

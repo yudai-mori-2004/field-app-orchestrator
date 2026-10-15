@@ -253,8 +253,8 @@ struct FieldAppCommand {
       throw FieldAppCLIError.invalidEnvironment("FAO_CONTROL_PORT must be a port number.")
     }
     let token = try requiredEnvironment("FAO_CONTROL_TOKEN", from: environment)
-    guard token.count >= 16 else {
-      throw FieldAppCLIError.invalidEnvironment("FAO_CONTROL_TOKEN must be at least 16 characters.")
+    guard token.count >= 8 else {
+      throw FieldAppCLIError.invalidEnvironment("FAO_CONTROL_TOKEN must be at least 8 characters.")
     }
     let server = try ControlServer(
       port: port,

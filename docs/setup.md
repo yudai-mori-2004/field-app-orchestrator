@@ -111,7 +111,7 @@ FAO_DEVELOPMENT_TEAM=<Team ID>
 | `FAO_DEVICE_ID` | iPhoneのUDID |
 | `FAO_DEVICE_LABEL` | `field-app`の識別名。サービス名とログファイル名に使用される。英数字、`.`、`_`、`-`のみ使用できる |
 | `FAO_CONTROL_PORT` | 背面タップの指示を受信するポート番号。iPhoneごとに異なる値を設定する（8400、8401、…） |
-| `FAO_CONTROL_TOKEN` | 背面タップの指示の認証に使用するトークン。16文字以上。`openssl rand -hex 16`で生成できる |
+| `FAO_CONTROL_TOKEN` | 背面タップの指示の認証に使用するトークン。8文字以上。iPhoneのショートカットのURLに入力するため、8文字程度を推奨する。`openssl rand -hex 4`で生成できる |
 | `FAO_DEVELOPMENT_TEAM` | WebDriverAgentの署名に使用するTeam ID。Apple Developerサイトの「メンバーシップの詳細」に記載されている10文字の英数字 |
 | `FAO_BATTERY_STOP_PERCENT` | 任意。撮影を停止するバッテリー残量（1〜50）。省略時は10 |
 | `FAO_WDA_XCTESTRUN` | 任意。WebDriverAgentのビルド成果物のパス。省略時は`.wda/`内のもの |
